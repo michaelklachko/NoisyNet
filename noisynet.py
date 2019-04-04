@@ -19,13 +19,11 @@ torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser(description='Your project title goes here')
 
-# ======================== Data Setings ============================================
 parser.add_argument('--dataset', type=str, default='cifar_RGB_4bit.npz', metavar='', help='name of dataset')
 parser.add_argument('--precision', type=str, default='full', metavar='', help='float precision: half (16 bits) or full (32 bits)')
 parser.add_argument('--resume', type=str, default=None, metavar='', help='full path of models to resume training')
 parser.add_argument('--tag', type=str, default='', metavar='', help='string to prepend to args.checkpoint_dir')
 
-# ======================== Network Model Setings ===================================  generate_input
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--generate_input', dest='generate_input', action='store_true')
 feature_parser.add_argument('--no-generate_input', dest='generate_input', action='store_false')

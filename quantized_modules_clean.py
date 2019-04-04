@@ -1,3 +1,8 @@
+"""Author Elad Hoffer
+https://github.com/eladhoffer/quantized.pytorch/blob/master/models/modules/quantize.py
+"""
+
+
 import torch
 from torch.autograd.function import InplaceFunction, Function
 import torch.nn as nn
