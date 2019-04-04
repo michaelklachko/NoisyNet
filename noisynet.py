@@ -127,7 +127,7 @@ parser.set_defaults(print_clip=False)
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--track_running_stats', dest='track_running_stats', action='store_true')
 feature_parser.add_argument('--no-track_running_stats', dest='track_running_stats', action='store_false')
-parser.set_defaults(track_running_stats=False)
+parser.set_defaults(track_running_stats=True)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--noise_test', dest='noise_test', action='store_true')
