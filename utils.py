@@ -75,20 +75,23 @@ def init_params(net):
 
 
 def weights_init(m):
+
     if isinstance(m, nn.Conv2d):
         n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-        m.weight.data.normal_(0, 1.*math.sqrt(2. / n))
+        m.weight.data.normal_(0, math.sqrt(2. / n))
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
     elif isinstance(m, nn.BatchNorm2d):
         m.weight.data.fill_(1)
         m.bias.data.zero_()
     elif isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+        #nn.init.normal_(m.weight, std=0.1)
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
 
-def init_model(model, args, s):
+def init_model(model, args, s=0):
 
     model.apply(weights_init)
 
@@ -96,35 +99,39 @@ def init_model(model, args, s):
         if 'weight' in n and 'conv' in n:
             if args.weight_init == 'kn':
                 if s == 0:
-                    print('\n\nInitializing n to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale))
+                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale_conv))
                 torch.nn.init.kaiming_normal_(p, mode='fan_out', nonlinearity='relu')
             elif args.weight_init == 'xn':
                 if s == 0:
-                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale))
+                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale_conv))
                 torch.nn.init.xavier_normal_(p, gain=nn.init.calculate_gain('relu'))
             elif args.weight_init == 'ku':
                 if s == 0:
-                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale))
+                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale_conv))
                 torch.nn.init.kaiming_uniform_(p, mode='fan_out', nonlinearity='relu')
             elif args.weight_init == 'xu':
                 if s == 0:
-                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale))
+                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale_conv))
                 torch.nn.init.xavier_uniform_(p, gain=nn.init.calculate_gain('relu'))
             elif args.weight_init == 'ortho':
                 if s == 0:
-                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale))
-                torch.nn.init.orthogonal_(p, gain=args.weight_init_scale)
+                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale_conv))
+                torch.nn.init.orthogonal_(p, gain=args.weight_init_scale_conv)
             else:
                 if s == 0:
-                    print('\n\nInitializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale))
+                    print('\n\nUNKNOWN init method: NOT Initializing {} to {}, scale param {}\n\n'.format(n, args.weight_init, args.weight_init_scale_conv))
 
-            if args.weight_init_scale != 1.0 and args.weight_init != 'ortho':
-                #if s == 0:
-                    #print('\n\nScaling {} by {}\n\n'.format(n, args.weight_init_scale))
-                #p.data = p.data * args.weight_init_scale
-                if s == 0 and 'conv1' in n:
-                    print('\n\nScaling {} by {}\n\n'.format(n, args.weight_init_scale))
-                    p.data = p.data * args.weight_init_scale
+            if args.weight_init_scale_conv != 1.0 and args.weight_init != 'ortho':
+                if s == 0:
+                    print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_conv))
+                p.data = p.data * args.weight_init_scale_conv
+
+        elif 'linear' in n and 'weght' in n:
+            print('\n\nInitializing {} to kaiming normal, scale param {}\n\n'.format(n, args.weight_init_scale_fc))
+            nn.init.kaiming_normal_(p, mode='fan_in', nonlinearity='relu')
+            if s == 0:
+                print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_fc))
+            p.data = p.data * args.weight_init_scale_fc
 
     if args.train_act_max:
         nn.init.constant_(model.act_max1, args.act_max1)
