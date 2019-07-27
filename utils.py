@@ -133,12 +133,12 @@ def init_model(model, args, s=0):
                 print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_fc))
             p.data = p.data * args.weight_init_scale_fc
 
-    if args.train_act_max:
+    if False and args.train_act_max:
         nn.init.constant_(model.act_max1, args.act_max1)
         nn.init.constant_(model.act_max2, args.act_max2)
         nn.init.constant_(model.act_max3, args.act_max3)
 
-    if args.train_w_max:
+    if False and args.train_w_max:
         nn.init.constant_(model.w_min1, -args.w_max1)
         nn.init.constant_(model.w_max1, args.w_max1)
 

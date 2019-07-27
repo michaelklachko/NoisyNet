@@ -84,7 +84,8 @@ def plot_grid(arrays, names, path=None, filename='', figsize=(30, 16), labels=['
 def plot_layers(layers=4, models=[], epoch=0, i=0, tensors=None, var='var', vars=[0.0], figsize=(42, 24), acc=0.0, tag=''):
 
 	types = ['input', 'weights', 'out', 'sigmas', 'noise']
-	names = ['input', 'weights', 'out', 'sigmas', 'noise', 'noise/signal range']
+	#names = ['input', 'weights', 'out', 'sigmas', 'noise', 'noise/signal range']
+	names = ['input', 'weights', 'out', 'pos/neg', 'after bn']
 
 	inputs = []
 	outs = []
@@ -154,7 +155,8 @@ def plot_layers(layers=4, models=[], epoch=0, i=0, tensors=None, var='var', vars
 		filename = 'epoch_{:d}_iter_{:d}_{}.png'.format(epoch, i, tag)
 
 
-	plot_grid([inputs, weights, outs, sigmas, noises, ems], names, path=models[0], filename=filename, figsize=figsize, labels=labels)
+	#plot_grid([inputs, weights, outs, sigmas, noises, ems], names, path=models[0], filename=filename, figsize=figsize, labels=labels)
+	plot_grid([inputs, weights, outs, sigmas, noises], names, path=models[0], filename=filename, figsize=figsize, labels=labels)
 	print('plot is saved to {}\n'.format(filename))
 
 

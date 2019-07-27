@@ -142,6 +142,11 @@ feature_parser.add_argument('--merged_dac', dest='merged_dac', action='store_tru
 feature_parser.add_argument('--no-merged_dac', dest='merged_dac', action='store_false')
 parser.set_defaults(merged_dac=True)
 
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--merge_bn', dest='merge_bn', action='store_true')
+feature_parser.add_argument('--no-merge_bn', dest='merge_bn', action='store_false')
+parser.set_defaults(merge_bn=False)
+
 parser.add_argument('--current', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current1', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current2', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
@@ -321,6 +326,19 @@ class Net(nn.Module):
 
 		self.conv1_ = self.conv1(self.input)
 
+		if args.merge_bn:
+			#print(self.conv1_.shape, self.bn1.bias.shape)
+			self.conv1_ += self.bn1.bias.view(1, -1, 1, 1) - model.bn1.running_mean.data.view(1, -1, 1, 1) * model.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+
+		with torch.no_grad():
+			w_pos = self.conv1.weight.clone()
+			w_pos[w_pos < 0] = 0
+			w_neg = self.conv1.weight.clone()
+			w_neg[w_neg >= 0] = 0
+			conv1_pos = F.conv2d(self.input, w_pos)
+			conv1_neg = F.conv2d(self.input, w_neg)
+			self.conv1_sep = torch.cat((conv1_neg, conv1_pos), 0)
+
 		if epoch == 0 and i == 0 and s == 0 and self.training:
 			print('conv1 out shape:', self.conv1_.shape)
 
@@ -393,13 +411,13 @@ class Net(nn.Module):
 
 		pool1 = self.pool(conv1_out)
 
-		if args.batchnorm:
+		if args.batchnorm and not args.merge_bn:
 			bn1 = self.bn1(pool1)
-			pool1_out = bn1
+			self.pool1_out = bn1
 		else:
-			pool1_out = pool1
+			self.pool1_out = pool1
 
-		self.relu1_ = self.relu(pool1_out)
+		self.relu1_ = self.relu(self.pool1_out)
 		if epoch == 0 and i == 0 and s == 0 and self.training:
 			print('relu1 out shape:', self.relu1_.shape)
 
@@ -428,6 +446,19 @@ class Net(nn.Module):
 			self.relu1 = self.quantize2(self.relu1)
 
 		self.conv2_ = self.conv2(self.relu1)
+
+		if args.merge_bn:
+			self.conv2_ += self.bn2.bias.view(1, -1, 1, 1) - model.bn2.running_mean.data.view(1, -1, 1, 1) * model.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+
+		with torch.no_grad():
+			w_pos = self.conv2.weight.clone()
+			w_pos[w_pos < 0] = 0
+			w_neg = self.conv2.weight.clone()
+			w_neg[w_neg >= 0] = 0
+			conv2_pos = F.conv2d(self.relu1, w_pos)
+			conv2_neg = F.conv2d(self.relu1, w_neg)
+			self.conv2_sep = torch.cat((conv2_neg, conv2_pos), 0)
+
 		if epoch == 0 and i == 0 and s == 0 and self.training:
 			print('conv2 out shape:', self.conv2_.shape)
 
@@ -483,13 +514,13 @@ class Net(nn.Module):
 
 		pool2 = self.pool(conv2_out)
 
-		if args.batchnorm:
+		if args.batchnorm and not args.merge_bn:
 			bn2 = self.bn2(pool2)
-			pool2_out = bn2
+			self.pool2_out = bn2
 		else:
-			pool2_out = pool2
+			self.pool2_out = pool2
 
-		self.relu2_ = self.relu(pool2_out)
+		self.relu2_ = self.relu(self.pool2_out)
 		if epoch == 0 and i == 0 and s == 0 and self.training:
 			print('relu2 out shape:', self.relu2_.shape)
 
@@ -515,6 +546,18 @@ class Net(nn.Module):
 			self.relu2 = self.quantize3(self.relu2)
 
 		self.linear1_ = self.linear1(self.relu2)
+
+		if args.merge_bn:
+			self.linear1_ += self.bn3.bias.view(1, -1) - model.bn3.running_mean.data.view(1, -1) * model.bn3.weight.data.view(1, -1) / torch.sqrt(model.bn3.running_var.data.view(1, -1) + 0.0000001)
+
+		with torch.no_grad():
+			w_pos = self.linear1.weight.clone()
+			w_pos[w_pos < 0] = 0
+			w_neg = self.linear1.weight.clone()
+			w_neg[w_neg >= 0] = 0
+			linear1_pos = F.linear(self.relu2, w_pos)
+			linear1_neg = F.linear(self.relu2, w_neg)
+			self.linear1_sep = torch.cat((linear1_neg, linear1_pos), 0)
 
 		if args.current3 > 0:
 
@@ -580,10 +623,12 @@ class Net(nn.Module):
 				else:
 					self.p3 = 30 * 1.0e-6 * 1.2 * torch.mean(a3_sums) / x_max3
 
-		if args.batchnorm and args.bn3:
-			linear1_out = self.bn3(linear1_out)
+		if args.batchnorm and args.bn3 and not args.merge_bn:
+			self.linear1_out = self.bn3(linear1_out)
+		else:
+			self.linear1_out = linear1_out
 
-		self.relu3_ = self.relu(linear1_out)
+		self.relu3_ = self.relu(self.linear1_out)
 
 		if epoch == 0 and i == 0 and s == 0 and self.training:
 			print('relu3 out shape:', self.relu3_.shape, '\n')
@@ -606,6 +651,19 @@ class Net(nn.Module):
 			self.relu3 = self.quantize4(self.relu3)
 
 		self.linear2_ = self.linear2(self.relu3)
+
+		if args.merge_bn:
+			#print(self.linear2_.shape)
+			self.linear2_ += self.bn4.bias.view(1, -1) - model.bn4.running_mean.data.view(1, -1) * model.bn4.weight.data.view(1, -1) / torch.sqrt(model.bn4.running_var.data.view(1, -1) + 0.0000001)
+
+		with torch.no_grad():
+			w_pos = self.linear2.weight.clone()
+			w_pos[w_pos < 0] = 0
+			w_neg = self.linear2.weight.clone()
+			w_neg[w_neg >= 0] = 0
+			linear2_pos = F.linear(self.relu3, w_pos)
+			linear2_neg = F.linear(self.relu3, w_neg)
+			self.linear2_sep = torch.cat((linear2_neg, linear2_pos), 0)
 
 		if args.current4 > 0:
 
@@ -657,8 +715,10 @@ class Net(nn.Module):
 				x_max4 = torch.max(self.relu3)
 				self.p4 = 30 * 1.0e-6 * 1.2 * torch.mean(a4_sums) / x_max4
 
-		if args.batchnorm and args.bn4:
-			linear2_out = self.bn4(linear2_out)
+		if args.batchnorm and args.bn4 and not args.merge_bn:
+			self.linear2_out = self.bn4(linear2_out)
+		else:
+			self.linear2_out = linear2_out
 
 		if (args.plot and s == 0 and i == 0 and epoch in [0, 1, 5, 10, 50, 100, 150, 249] and self.training) or args.write or (args.resume is not None and args.plot):
 
@@ -669,6 +729,9 @@ class Net(nn.Module):
 			if args.current1 > 0:
 				sigmas1 = sigmas1.detach().cpu().numpy()
 				noise1 = self.noise1.detach().cpu().numpy()
+			elif True:
+				sigmas1 = self.conv1_sep.detach().cpu().numpy()
+				noise1 = self.pool1_out.detach().cpu().numpy()
 			else:
 				sigmas1 = np.zeros_like(self.conv1_.detach().cpu().numpy())
 				noise1 = np.zeros_like(self.conv1_.detach().cpu().numpy())
@@ -676,6 +739,9 @@ class Net(nn.Module):
 			if args.current2 > 0:
 				sigmas2 = sigmas2.detach().cpu().numpy()
 				noise2 = self.noise2.detach().cpu().numpy()
+			elif True:
+				sigmas2 = self.conv2_sep.detach().cpu().numpy()
+				noise2 = self.pool2_out.detach().cpu().numpy()
 			else:
 				sigmas2 = np.zeros_like(self.conv2_.detach().cpu().numpy())
 				noise2 = np.zeros_like(self.conv2_.detach().cpu().numpy())
@@ -683,6 +749,9 @@ class Net(nn.Module):
 			if args.current3 > 0:
 				sigmas3 = sigmas3.detach().cpu().numpy()
 				noise3 = self.noise3.detach().cpu().numpy()
+			elif True:
+				sigmas3 = self.linear1_sep.detach().cpu().numpy()
+				noise3 = self.linear1_out.detach().cpu().numpy()
 			else:
 				sigmas3 = np.zeros_like(self.linear1_.detach().cpu().numpy())
 				noise3 = np.zeros_like(self.linear1_.detach().cpu().numpy())
@@ -690,6 +759,9 @@ class Net(nn.Module):
 			if args.current4 > 0:
 				sigmas4 = sigmas4.detach().cpu().numpy()
 				noise4 = self.noise4.detach().cpu().numpy()
+			elif True:
+				sigmas4 = self.linear2_sep.detach().cpu().numpy()
+				noise4 = self.linear2_out.detach().cpu().numpy()
 			else:
 				sigmas4 = np.zeros_like(self.linear2_.detach().cpu().numpy())
 				noise4 = np.zeros_like(self.linear2_.detach().cpu().numpy())
@@ -740,7 +812,7 @@ class Net(nn.Module):
 				print('\n\nnumpy arrays saved to', args.checkpoint_dir, '\n\n')
 				raise (SystemExit)
 
-		return linear2_out
+		return self.linear2_out
 
 
 np.set_printoptions(precision=4, linewidth=120, suppress=True)
@@ -985,15 +1057,37 @@ for current in current_vars:
 				print('\n\nLoading model from saved checkpoint at\n{}\n\n'.format(args.resume))
 				args.checkpoint_dir = '/'.join(args.resume.split('/')[:-1]) + '/'
 				model = Net(args=args)
-				model.load_state_dict(torch.load(args.resume))
 				model = model.cuda()
+
+				saved_model = torch.load(args.resume)  #ignore unnecessary parameters
+
+				for saved_name, saved_param in saved_model.items():
+					print(saved_name)
+					for name, param in model.named_parameters():
+						if name == saved_name:
+							print('\tmatched, copying...')
+							param.data = saved_param.data
+					if 'running' in saved_name:  #batchnorm stats are not in named_parameters
+						print('\tmatched, copying...')
+						m = model.state_dict()
+						m.update({saved_name: saved_param})
+						model.load_state_dict(m)
+
+				#model.load_state_dict(torch.load(args.resume))
+
+				if args.merge_bn:
+					model.conv1.weight.data *= model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)  #(64,3,5,5) x (64)
+					model.conv2.weight.data *= model.bn2.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
+					model.linear1.weight.data *= model.bn3.weight.data.view(-1, 1) / torch.sqrt(model.bn3.running_var.data.view(-1, 1) + 0.0000001)
+					model.linear2.weight.data *= model.bn4.weight.data.view(-1, 1) / torch.sqrt(model.bn4.running_var.data.view(-1, 1) + 0.0000001)
+
 				model.eval()
 				te_accs = []
 
 				model_fname = args.resume.split('/')[-1]
 				init_epoch = int(model_fname.split('_')[2])
 				init_acc = model_fname.split('_')[-1][:-4]
-				print(args.current1, args.current2, args.current3, args.current4)
+				print('\n\nCurrents:', args.current1, args.current2, args.current3, args.current4)
 				random.seed(args.seed)
 				torch.manual_seed(args.seed)
 
@@ -1576,7 +1670,7 @@ for current in current_vars:
 					if saved:
 						os.remove(args.checkpoint_dir + '/model_epoch_{:d}_acc_{:.2f}.pth'.format(best_epoch, saved_accuracy))
 
-					if epoch > init_epoch + 60:
+					if epoch > init_epoch + 90:
 						if create_dir:
 							utils.saveargs(args)
 							create_dir = False
@@ -1665,7 +1759,7 @@ for current in current_vars:
 					np.mean(w_sparsity_results[var]), best_w_sparsity_string, np.mean(act_sparsity_results[var]), best_act_sparsity_string,
 					np.mean(power_results[var]), best_power_string, [float('{:.2f}'.format(x)) for x in noise_results[var]], np.mean(noise_results[var]))
 
-			else: 
+			else:
 				print('\n\nBest accuracies for current {}  {} {} {} powers {}\n\n'.format(
 					args.current1, args.var_name, var, ['{:.2f}'.format(x) for x in best_accuracies],
 					['{:.2f}'.format(y) for y in best_powers]))
