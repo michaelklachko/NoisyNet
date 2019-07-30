@@ -147,6 +147,11 @@ feature_parser.add_argument('--merge_bn', dest='merge_bn', action='store_true')
 feature_parser.add_argument('--no-merge_bn', dest='merge_bn', action='store_false')
 parser.set_defaults(merge_bn=False)
 
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--blocked', dest='blocked', action='store_true')
+feature_parser.add_argument('--no-blocked', dest='blocked', action='store_false')
+parser.set_defaults(blocked=False)
+
 parser.add_argument('--current', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current1', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current2', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
@@ -324,11 +329,38 @@ class Net(nn.Module):
 		if epoch == 0 and i == 0 and s == 0 and self.training:
 			print('\ninput shape:', self.input.shape)
 
-		self.conv1_ = self.conv1(self.input)
+		self.conv1_no_bias = self.conv1(self.input)
 
-		if args.merge_bn:
-			#print(self.conv1_.shape, self.bn1.bias.shape)
-			self.conv1_ += self.bn1.bias.view(1, -1, 1, 1) - model.bn1.running_mean.data.view(1, -1, 1, 1) * model.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+		if args.blocked:
+			'''
+			conv1_blocks = []
+			for fi in range(args.fs):
+				for fk in range(args.fs):
+					#print('\nweight shape:', self.conv1.weight[:, :, fi, fk].shape)
+					block = F.conv2d(self.input, self.conv1.weight[:, :, fi, fk].view(self.conv1.weight.shape[0], self.conv1.weight.shape[1], 1, 1))
+					#print('block shape:', block.shape)
+					conv1_blocks.append(block)
+			conv1_blocks = torch.cat(conv1_blocks, 1)
+			#print('\nconv1_blocks shape', conv1_blocks.shape)
+			#print(conv1_blocks.detach().cpu().numpy()[60, 234, :8, :8])
+			'''
+			conv1_blocks = []
+			block_size = 64
+			dim = self.conv1.weight.shape[1]  #weights shape: (fm_out, fm_in, fs, fs)
+			num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
+			f = self.conv1.weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
+			for b in range(num_blocks):
+				conv1_blocks.append(F.conv2d(self.input[:, b * block_size: (b + 1) * block_size, :, :], f[:, b * block_size: (b + 1) * block_size, :, :]))
+			conv1_blocks = torch.cat(conv1_blocks, 1)  #conv_out shape: (bs, fms, h, v)
+			#print('\nconv1_blocks shape', conv1_blocks.shape, '\n')
+			#print(conv1_blocks.detach().cpu().numpy()[60, 234, :8, :8])
+
+		if args.merge_bn and not self.training:
+			self.bias1 = self.bn1.bias.view(1, -1, 1, 1) - model.bn1.running_mean.data.view(1, -1, 1, 1) * model.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+			self.conv1_ = self.conv1_no_bias + self.bias1
+		else:
+			self.conv1_ = self.conv1_no_bias
+			self.bias1 = torch.Tensor([0])
 
 		with torch.no_grad():
 			w_pos = self.conv1.weight.clone()
@@ -445,10 +477,42 @@ class Net(nn.Module):
 		if args.q_a2 > 0:
 			self.relu1 = self.quantize2(self.relu1)
 
-		self.conv2_ = self.conv2(self.relu1)
+		self.conv2_no_bias = self.conv2(self.relu1)
 
-		if args.merge_bn:
-			self.conv2_ += self.bn2.bias.view(1, -1, 1, 1) - model.bn2.running_mean.data.view(1, -1, 1, 1) * model.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+		if args.blocked:
+			'''
+			Take 64 input FMs, do 1x1 conv 25 times on them
+			f = (128, 64, 5, 5)
+			
+			conv2_blocks = []
+			for fi in range(args.fs):
+				for fk in range(args.fs):
+					#print('\nweight shape:', self.conv2.weight[:, :, fi, fk].shape)
+					block = F.conv2d(self.relu1, self.conv2.weight[:, :, fi, fk].view(self.conv2.weight.shape[0], self.conv2.weight.shape[1], 1, 1))
+					#print('block shape:', block.shape)
+					conv2_blocks.append(block)
+			conv2_blocks = torch.cat(conv2_blocks, 1)
+			#print('\nconv2_blocks shape', conv2_blocks.shape)
+			#print(conv2_blocks.detach().cpu().numpy()[60, 1234, :8, :8]
+			'''
+			conv2_blocks = []
+			block_size = 64
+			dim = self.conv2.weight.shape[1]  #weights shape: (fm_out, fm_in, fs, fs)
+			num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
+			f = self.conv2.weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
+			for b in range(num_blocks):
+				conv2_blocks.append(F.conv2d(self.relu1[:, b * block_size : (b + 1) * block_size, :, :], f[:, b * block_size : (b + 1) * block_size, :, :]))
+			conv2_blocks = torch.cat(conv2_blocks, 1)  #conv_out shape: (bs, fms, h, v)
+			#print('\nconv2_blocks shape', conv2_blocks.shape, '\n')
+			#print(conv2_blocks.detach().cpu().numpy()[60, 1234, :8, :8])
+			#raise(SystemExit)
+
+		if args.merge_bn and not self.training:
+			self.bias2 = self.bn2.bias.view(1, -1, 1, 1) - model.bn2.running_mean.data.view(1, -1, 1, 1) * model.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+			self.conv2_ = self.conv2_no_bias + self.bias2
+		else:
+			self.conv2_ = self.conv2_no_bias
+			self.bias2 = torch.Tensor([0])
 
 		with torch.no_grad():
 			w_pos = self.conv2.weight.clone()
@@ -545,10 +609,29 @@ class Net(nn.Module):
 		if args.q_a3 > 0:
 			self.relu2 = self.quantize3(self.relu2)
 
-		self.linear1_ = self.linear1(self.relu2)
+		self.linear1_no_bias = self.linear1(self.relu2)
 
-		if args.merge_bn:
-			self.linear1_ += self.bn3.bias.view(1, -1) - model.bn3.running_mean.data.view(1, -1) * model.bn3.weight.data.view(1, -1) / torch.sqrt(model.bn3.running_var.data.view(1, -1) + 0.0000001)
+		if args.blocked:
+			linear1_blocks = []  #linear1 shape: (390, 3200)
+			block_size = 64
+			dim = self.linear1.weight.shape[1]  #weights shape: (out, in)
+			num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
+			for b in range(num_blocks):
+				#print('linear1 weight shape:', self.linear1.weight[:, b * block_size : (b + 1) * block_size].shape)
+				block = F.linear(self.relu2[:, b * block_size : (b + 1) * block_size], self.linear1.weight[:, b * block_size : (b + 1) * block_size])
+				#print('block shape:', block.shape)
+				linear1_blocks.append(block)
+			linear1_blocks = torch.cat(linear1_blocks, 1)
+			#print('\nlinear1_blocks shape', linear1_blocks.shape, '\n')
+			#print(linear1_blocks.detach().cpu().numpy()[:8, :8])
+			#raise(SystemExit)
+
+		if args.merge_bn and not self.training:
+			self.bias3 = self.bn3.bias.view(1, -1) - model.bn3.running_mean.data.view(1, -1) * model.bn3.weight.data.view(1, -1) / torch.sqrt(model.bn3.running_var.data.view(1, -1) + 0.0000001)
+			self.linear1_ = self.linear1_no_bias + self.bias3
+		else:
+			self.linear1_ = self.linear1_no_bias
+			self.bias3 = torch.Tensor([0])
 
 		with torch.no_grad():
 			w_pos = self.linear1.weight.clone()
@@ -650,11 +733,32 @@ class Net(nn.Module):
 		if args.q_a4 > 0:
 			self.relu3 = self.quantize4(self.relu3)
 
-		self.linear2_ = self.linear2(self.relu3)
+		self.linear2_no_bias = self.linear2(self.relu3)
 
-		if args.merge_bn:
-			#print(self.linear2_.shape)
-			self.linear2_ += self.bn4.bias.view(1, -1) - model.bn4.running_mean.data.view(1, -1) * model.bn4.weight.data.view(1, -1) / torch.sqrt(model.bn4.running_var.data.view(1, -1) + 0.0000001)
+		if args.blocked:
+			linear2_blocks = []  #linear1 shape: (390, 3200)
+			block_size = 64
+			dim = self.linear2.weight.shape[1]  #weights shape: (out, in)
+			#print(self.linear2.weight.shape)
+			num_blocks = max(dim // block_size, 1)  #min 1 block, should be cleanly divisible!
+			#print(num_blocks)
+			#print(self.relu3.shape)
+			for b in range(num_blocks):
+				#print('linear2 weight shape:', self.linear2.weight[:, b * block_size: (b + 1) * block_size].shape)
+				block = F.linear(self.relu3[:, b * block_size: (b + 1) * block_size], self.linear2.weight[:, b * block_size: (b + 1) * block_size])
+				#print('block shape:', block.shape)
+				linear2_blocks.append(block)
+			linear2_blocks = torch.cat(linear2_blocks, 1)
+			#print('\nlinear2_blocks shape', linear2_blocks.shape, '\n')
+			#print(linear2_blocks.detach().cpu().numpy()[:8, :8])
+			#raise (SystemExit)
+
+		if args.merge_bn and not self.training:
+			self.bias4 = self.bn4.bias.view(1, -1) - model.bn4.running_mean.data.view(1, -1) * model.bn4.weight.data.view(1, -1) / torch.sqrt(model.bn4.running_var.data.view(1, -1) + 0.0000001)
+			self.linear2_ = self.linear2_no_bias + self.bias4
+		else:
+			self.linear2_ = self.linear2_no_bias
+			self.bias4 = torch.Tensor([0])
 
 		with torch.no_grad():
 			w_pos = self.linear2.weight.clone()
@@ -726,52 +830,6 @@ class Net(nn.Module):
 				utils.saveargs(args)
 				self.create_dir = False
 
-			if args.current1 > 0:
-				sigmas1 = sigmas1.detach().cpu().numpy()
-				noise1 = self.noise1.detach().cpu().numpy()
-			elif True:
-				sigmas1 = self.conv1_sep.detach().cpu().numpy()
-				noise1 = self.pool1_out.detach().cpu().numpy()
-			else:
-				sigmas1 = np.zeros_like(self.conv1_.detach().cpu().numpy())
-				noise1 = np.zeros_like(self.conv1_.detach().cpu().numpy())
-
-			if args.current2 > 0:
-				sigmas2 = sigmas2.detach().cpu().numpy()
-				noise2 = self.noise2.detach().cpu().numpy()
-			elif True:
-				sigmas2 = self.conv2_sep.detach().cpu().numpy()
-				noise2 = self.pool2_out.detach().cpu().numpy()
-			else:
-				sigmas2 = np.zeros_like(self.conv2_.detach().cpu().numpy())
-				noise2 = np.zeros_like(self.conv2_.detach().cpu().numpy())
-
-			if args.current3 > 0:
-				sigmas3 = sigmas3.detach().cpu().numpy()
-				noise3 = self.noise3.detach().cpu().numpy()
-			elif True:
-				sigmas3 = self.linear1_sep.detach().cpu().numpy()
-				noise3 = self.linear1_out.detach().cpu().numpy()
-			else:
-				sigmas3 = np.zeros_like(self.linear1_.detach().cpu().numpy())
-				noise3 = np.zeros_like(self.linear1_.detach().cpu().numpy())
-
-			if args.current4 > 0:
-				sigmas4 = sigmas4.detach().cpu().numpy()
-				noise4 = self.noise4.detach().cpu().numpy()
-			elif True:
-				sigmas4 = self.linear2_sep.detach().cpu().numpy()
-				noise4 = self.linear2_out.detach().cpu().numpy()
-			else:
-				sigmas4 = np.zeros_like(self.linear2_.detach().cpu().numpy())
-				noise4 = np.zeros_like(self.linear2_.detach().cpu().numpy())
-
-			tensors = []
-			tensors.append([self.input.detach().cpu().numpy(), self.conv1.weight.detach().cpu().numpy(), self.conv1_.detach().cpu().numpy(), sigmas1, noise1])
-			tensors.append([self.relu1.detach().cpu().numpy(), self.conv2.weight.detach().cpu().numpy(), self.conv2_.detach().cpu().numpy(), sigmas2, noise2])
-			tensors.append([self.relu2.detach().cpu().numpy(), self.linear1.weight.detach().cpu().numpy(), self.linear1_.detach().cpu().numpy(), sigmas3, noise3])
-			tensors.append([self.relu3.detach().cpu().numpy(), self.linear2.weight.detach().cpu().numpy(), self.linear2_.detach().cpu().numpy(), sigmas4, noise4])
-
 			if args.var_name == 'blank':
 				var_ = 0
 			else:
@@ -780,35 +838,55 @@ class Net(nn.Module):
 			if (epoch == 0 and i == 0) or args.plot:
 				print('\n\n\nBatch size', list(self.input.size())[0], '\n\n\n')
 
+			names = ['input', 'weights', 'vmm', 'vmm diff']
+			layer1 = [[self.input], [self.conv1.weight], [self.conv1_no_bias], [self.conv1_sep]]
+			layer2 = [[self.relu1], [self.conv2.weight], [self.conv2_no_bias], [self.conv2_sep]]
+			layer3 = [[self.relu2], [self.linear1.weight], [self.linear1_no_bias], [self.linear1_sep]]
+			layer4 = [[self.relu3], [self.linear2.weight], [self.linear2_no_bias], [self.linear2_sep]]
+			if args.blocked:
+				layer1.append([conv1_blocks])
+				layer2.append([conv2_blocks])
+				layer3.append([linear1_blocks])
+				layer4.append([linear2_blocks])
+				names.append('vmm blocked')
+			if args.merge_bn:
+				layer1.append([self.bias1])
+				layer2.append([self.bias2])
+				layer3.append([self.bias3])
+				layer4.append([self.bias4])
+				names.append('biases')
+			layer1.append([self.pool1_out])
+			layer2.append([self.pool2_out])
+			layer3.append([self.linear1_out])
+			layer4.append([self.linear2_out])
+			names.append('pre-activation')
+			if args.current1 > 0:
+				layer1 += ([sigmas1], [self.noise1])
+				layer2 += ([sigmas2], [self.noise2])
+				layer3 += ([sigmas3], [self.noise3])
+				layer4 += ([sigmas4], [self.noise4])
+				names.extend(['sigmas', 'noise', 'noise/range'])
+			layers = [layer1, layer2, layer3, layer4]
+
+			for layer in layers: #de-torch arrays
+				for array in layer:
+					array[0] = array[0].detach().cpu().numpy()
+
 			if args.plot:
-				plot_layers(layers=4, models=[args.checkpoint_dir], epoch=epoch, i=i, tensors=tensors, var=args.var_name, vars=[var_], figsize=(42, 24), acc=acc, tag=args.tag)
-				#print('\n\nSaved plots to {}\n\n'.format(args.checkpoint_dir))
-				#raise(SystemExit)
+				figsize = (len(names) * 7, 4 * 6)
+				var_ = [np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
+				if args.var_name == 'blank':
+					var_name = ''
+				else:
+					var_name = args.var_name
+
+				plot_layers(num_layers=4, models=[args.checkpoint_dir], epoch=epoch, i=i, layers=layers, names=names, var=var_name, vars=[var_], figsize=figsize, acc=acc, tag=args.tag)
+				print('\n\nSaved plots to {}\n\n'.format(args.checkpoint_dir))
+				if args.resume is not None:
+					raise(SystemExit)
 
 			if args.write:
-				np.save(args.checkpoint_dir + 'layer1_input_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.input.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer1_weights_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.conv1.weight.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer1_out_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.conv1_.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer1_sigmas_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), sigmas1)
-				np.save(args.checkpoint_dir + '/layer1_noise_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), noise1)
-
-				np.save(args.checkpoint_dir + 'layer2_input_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.relu1.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer2_weights_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.conv2.weight.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer2_out_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.conv2_.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer2_sigmas_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), sigmas2)
-				np.save(args.checkpoint_dir + '/layer2_noise_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), noise2)
-
-				np.save(args.checkpoint_dir + 'layer3_input_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.relu2.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer3_weights_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.linear1.weight.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer3_out_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.linear1_.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer3_sigmas_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), sigmas3)
-				np.save(args.checkpoint_dir + '/layer3_noise_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), noise3)
-
-				np.save(args.checkpoint_dir + 'layer4_input_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.relu3.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer4_weights_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.linear2.weight.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer4_out_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), self.linear2_.detach().cpu().numpy())
-				np.save(args.checkpoint_dir + '/layer4_sigmas_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), sigmas4)
-				np.save(args.checkpoint_dir + '/layer4_noise_epoch_{:d}_iter_{:d}.npy'.format(epoch, i), noise4)
+				np.save(args.checkpoint_dir + 'layers.npy', np.array(layers))
 				print('\n\nnumpy arrays saved to', args.checkpoint_dir, '\n\n')
 				raise (SystemExit)
 
@@ -1075,7 +1153,7 @@ for current in current_vars:
 
 				#model.load_state_dict(torch.load(args.resume))
 
-				if args.merge_bn:
+				if args.merge_bn and not model.training:
 					model.conv1.weight.data *= model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)  #(64,3,5,5) x (64)
 					model.conv2.weight.data *= model.bn2.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
 					model.linear1.weight.data *= model.bn3.weight.data.view(-1, 1) / torch.sqrt(model.bn3.running_var.data.view(-1, 1) + 0.0000001)
@@ -1090,6 +1168,9 @@ for current in current_vars:
 				print('\n\nCurrents:', args.current1, args.current2, args.current3, args.current4)
 				random.seed(args.seed)
 				torch.manual_seed(args.seed)
+
+				if args.plot:
+					args.batch_size = 500
 
 				for i in range(10000 // args.batch_size):
 					input = test_inputs[i * args.batch_size:(i + 1) * args.batch_size]
@@ -1670,7 +1751,7 @@ for current in current_vars:
 					if saved:
 						os.remove(args.checkpoint_dir + '/model_epoch_{:d}_acc_{:.2f}.pth'.format(best_epoch, saved_accuracy))
 
-					if epoch > init_epoch + 90:
+					if epoch > init_epoch + 100:
 						if create_dir:
 							utils.saveargs(args)
 							create_dir = False

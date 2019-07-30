@@ -65,109 +65,93 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
 	if log:
 		plt.semilogy()
 	ax.legend(loc='upper right', prop={'size': 12})
-	#plt.show()
 
 
-def plot_grid(arrays, names, path=None, filename='', figsize=(30, 16), labels=['1']):
-	#print('plot_grid')
-	#arrays has 6 arrays of diff type, with num_layers of tuples in each array, each tuple holding num_models arrays.
-	rows = len(arrays[0])
-	columns = len(arrays)
+def plot_grid(layers, names, path=None, filename='', figsize=(30, 16), labels=['1']):
 	plt.figure(figsize=figsize)
-	for c, name in zip(range(columns), names):  #6 types, arrays[0] is inputs, ...
-		for array, r in zip(arrays[c], range(rows)):  #layers for this type
-			place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ' + name, labels=labels)
+	rows = len(layers)
+	columns = len(layers[0])
+	for r, layer in zip(range(rows), layers):
+		for c, name in zip(range(columns), names):
+			place_fig(layer[c], rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ' + name, labels=labels)
 	plt.savefig(path + filename, dpi=300, bbox_inches='tight')
 	plt.close()
 
 
-def plot_layers(layers=4, models=[], epoch=0, i=0, tensors=None, var='var', vars=[0.0], figsize=(42, 24), acc=0.0, tag=''):
+def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], figsize=(42, 24), acc=0.0, tag=''):
+	accs = [acc]
 
-	types = ['input', 'weights', 'out', 'sigmas', 'noise']
-	#names = ['input', 'weights', 'out', 'sigmas', 'noise', 'noise/signal range']
-	names = ['input', 'weights', 'out', 'pos/neg', 'after bn']
-
-	inputs = []
-	outs = []
-	weights = []
-	noises = []
-	sigmas = []
-	ems = []
-
-	arrays = [inputs, weights, outs, sigmas, noises]
-
-	if tensors is None:   #extract best accuracy for each model
+	if len(models) > 1:
+		layers = []
 		accs = []
-		epochs = []
+		for l in range(num_layers):  #add placeholder for each layer
+			layers.append([])
+			for n in range(len(names)):  #TODO
+				layers[l].append([])
+
 		for model in models:
-			flist = os.listdir(model)
+			print('\n\nLoading model {}\n\n'.format(model))
+			flist = os.listdir(model)  #extract best accuracy from model name
 			for fname in flist:
 				if 'model' in fname:
-					epoch = int(fname.split('_')[2])  #model_epoch_xxx_acc_yy.yy.pth
 					acc = float(fname.split('_')[-1][:-4])
 			accs.append(acc)
-			epochs.append(epoch)
-	else:
-		accs = [acc]
+
+			model_layers = np.load(model + 'layers.npy', allow_pickle=True)  #construct layers (placeholders in layers will contain multiple arrays, one per model)
+			for l in range(num_layers):
+				for col in range(len(model_layers[l])):
+					layers[l][col].append(model_layers[l][col][0])
+
+				if 'noise' in names:  #add noise/signal ratio array to each layer, if noise present
+					out = model_layers[l][2][0]
+					noise = model_layers[l][-1][0]  #assume vmm out to be 3rd array in layer and noise last array:
+					full_range = np.max(out) - np.min(out)
+					clipped_range = np.percentile(out, 99) - np.percentile(out, 1)
+					if clipped_range == 0:
+						clipped_range = max(np.max(out) / 100., 1)
+					error = noise / clipped_range
+					print('Layer {:d}  pre-act range: clipped (99th-1st pctl)/full {:>5.1f}/{:>5.1f}  error range {:.2f}-{:.2f}'.format(
+						l, clipped_range, full_range, np.min(error), np.max(error)))
+					layers[l][-1].append(error)
 
 	labels = []
+	print('\n')
 	for k in range(len(accs)):
 		labels.append(var + ' ' + str(vars[k]) + ' ({:.1f}%)'.format(accs[k]))
 		print('epoch {:d} batch {:d} plotting var {}'.format(epoch, i, labels[-1]))
 
-	for l in range(layers):    #for each layer, we either go through tensors (if given, from single model), or through models
-		if tensors is None:
-			for atype, array in zip(types, arrays):
-				temp = []
-				for model, epoch in zip(models, epochs):
-					name = model + 'layer' + str(l + 1) + '_' + atype + '_epoch_' + str(epoch) + '_iter_0.npy'
-					temp.append(np.load(name))  #noises = [[model1_noise1, model2_noise1], [model1_noise2, model2_noise2], ...]
-				array.append(temp)
-			epoch = 0   #for filename
-
-			temp = []
-			for out, noise in zip(outs[l], noises[l]):
-				full_range = np.max(out) - np.min(out)
-				clipped_range = np.percentile(out, 99) - np.percentile(out, 1)
-				if clipped_range == 0:
-					clipped_range = max(np.max(out) / 100., 1)
-				em = noise / clipped_range
-				temp.append(em)
-			ems.append(temp)
-
-		else:
-			for array, t in zip(arrays, tensors[l]):
-				array.append([t])    #noises = [[noise1], [noise2], ...]
-
-			full_range = np.max(outs[l][0]) - np.min(outs[l][0])
-			clipped_range = np.percentile(outs[l][0], 99) - np.percentile(outs[l][0], 1)
-			if clipped_range == 0:
-				clipped_range = max(np.max(outs[l][0]) / 100., 1)
-			em = noises[l][0] / clipped_range
-			ems.append([em])
-
-			print('Layer {:d}  pre-act range: clipped (99th-1st pctl)/full {:>5.1f}/{:>5.1f}  error range {:.2f}-{:.2f}'.format(
-				l, clipped_range, full_range, np.min(em), np.max(em)))
-
 	if len(models) > 1:
-		filename = 'comparison_of_act_max1_final{}'.format(var)
+		filename = 'comparison_of_{}'.format(var)
 	else:
 		filename = 'epoch_{:d}_iter_{:d}_{}.png'.format(epoch, i, tag)
 
-
-	#plot_grid([inputs, weights, outs, sigmas, noises, ems], names, path=models[0], filename=filename, figsize=figsize, labels=labels)
-	plot_grid([inputs, weights, outs, sigmas, noises], names, path=models[0], filename=filename, figsize=figsize, labels=labels)
-	print('plot is saved to {}\n'.format(filename))
+	plot_grid(layers, names, path=models[0], filename=filename, figsize=figsize, labels=labels)
+	print('\nplot is saved to {}\n'.format(filename))
 
 
 if __name__ == "__main__":
 	#for comparative figures, first save all values as numpy arrays using --plot arg in noisynet.py
 
-	model1 = 'results/current-1.0-1.0-1.0-1.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-0.5-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.005_grad_clip-0.0_2019-01-01_13-16-33/'
-	model2 = 'results/current-1.0-1.0-1.0-1.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-5.0-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.005_grad_clip-0.0_2019-01-01_13-17-24/'
+	model1 = 'results/a_atest_current-5.0-5.0-5.0-5.0_L3-0.0_L3_act-0.0_L2-0.0005-0.0005-0.0005-0.0005_actmax-2.0-2.0-2.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.0006_grad_clip-0.0_2019-07-30_15-01-21/'
+	model2 = 'results/a_btest_current-5.0-5.0-5.0-5.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-2.0-2.0-2.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.0006_grad_clip-0.0_2019-07-30_15-08-13/'
 	model3 = 'results/current-1.0-1.0-1.0-1.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-100.0-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.005_grad_clip-0.0_2019-01-01_13-18-31/'
 
-	models = [model1, model2, model3]
+	models = [model1, model2]
 
-	tag = ''
-	plot_layers(layers=4, models=models, epoch=0, i=0, tensors=None, var='', vars=[0.5, 5.0, 100], figsize=(46, 18), acc=0.0, tag=tag)
+	names = ['input', 'weights', 'vmm', 'vmm diff']
+	if 1:#args.blocked:
+		names.append('vmm blocked')
+	if 1:#args.merge_bn:
+		names.append('biases')
+	names.append('pre-activation')
+	if 1:#args.current1 > 0:
+		names.extend(['sigmas', 'noise', 'noise/range'])
+	print('\n\nPlotting histograms for {}\n'.format(names))
+	#names = ['input', 'weights', 'out', 'pos/neg', 'after bn']
+	#figsize = (len(names) * 8, 4 * 4.5)
+	figsize = (len(names) * 7, 4 * 6)
+	var = 'L2'
+	vars = [0.0005, 0.0]
+
+	tag = 'test_tag'
+	plot_layers(num_layers=4, models=models, epoch=0, i=0, names=names, var=var, vars=vars, figsize=figsize, tag=tag)
