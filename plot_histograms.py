@@ -86,7 +86,7 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
 		accs = []
 		for l in range(num_layers):  #add placeholder for each layer
 			layers.append([])
-			for n in range(len(names)):  #TODO
+			for n in range(len(names)):
 				layers[l].append([])
 
 		for model in models:
