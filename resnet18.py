@@ -19,6 +19,7 @@ import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
 
 import utils
+from quantized_modules_clean import QConv2d, QLinear, QuantMeasure
 
 cudnn.benchmark = True
 
@@ -40,34 +41,51 @@ parser.add_argument('--debug', dest='debug', action='store_true', help='debug')
 parser.add_argument('--distort_w_test', dest='distort_w_test', action='store_true', help='distort weights during test')
 parser.add_argument('--distort_w_train', dest='distort_w_train', action='store_true', help='distort weights during train')
 parser.add_argument('--noise', default=0.1, type=float, help='mult weights by uniform noise with this range +/-')
+parser.add_argument('--stochastic', default=0.5, type=float, help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--step-after', default=30, type=int, help='reduce LR after this number of epochs')
 parser.add_argument('--seed', default=None, type=int, help='seed for initializing training. ')
 parser.add_argument('--num_sims', default=1, type=int, help='number of simulations.')
+parser.add_argument('--q_a', default=0, type=int, help='number of bits to quantize layer input')
+parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
 feature_parser.add_argument('--no-pretrained', dest='pretrained', action='store_false')
-parser.set_defaults(blocked=False)
+parser.set_defaults(pretrained=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--debug_quant', dest='debug_quant', action='store_true')
+feature_parser.add_argument('--no-debug_quant', dest='debug_quant', action='store_false')
+parser.set_defaults(debug_quant=False)
 
 warnings.filterwarnings("ignore", "Corrupt EXIF data", UserWarning)
 
-'''
+
 class BasicBlock(nn.Module):
 	def __init__(self, inplanes, planes, stride=1, downsample=None):
 		super(BasicBlock, self).__init__()
 		self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
 		self.bn1 = nn.BatchNorm2d(planes)
-		self.relu = nn.ReLU(inplace=True)
+		if args.act_max > 0:
+			self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
+		else:
+			self.relu = nn.ReLU(inplace=True)
+		#self.relu = nn.ReLU(inplace=True)
 		self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
 		self.bn2 = nn.BatchNorm2d(planes)
 		self.downsample = downsample
+		self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, debug=args.debug_quant)
 
 	def forward(self, x):
+		if args.q_a > 0:
+			x = self.quantize(x)
 		residual = x
 
 		out = self.conv1(x)
 		out = self.bn1(out)
 		out = self.relu(out)
+		if args.q_a > 0:
+			out = self.quantize(out)
 		out = self.conv2(out)
 		out = self.bn2(out)
 
@@ -87,9 +105,13 @@ class ResNet(nn.Module):
 		super(ResNet, self).__init__()
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
 		self.bn1 = nn.BatchNorm2d(64)
-		self.relu = nn.ReLU(inplace=True)
+		if args.act_max > 0:
+			self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
+		else:
+			self.relu = nn.ReLU(inplace=True)
+		#self.relu = nn.ReLU(inplace=True)
 		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
+		self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, debug=args.debug_quant)
 
 		self.layer1 = self._make_layer(block, 64)
 		self.layer2 = self._make_layer(block, 128, stride=2)
@@ -122,6 +144,8 @@ class ResNet(nn.Module):
 		return nn.Sequential(*layers)
 
 	def forward(self, x):
+		if args.q_a > 0:
+			x = self.quantize(x)
 		x = self.conv1(x)
 		x = self.bn1(x)
 		x = self.relu(x)
@@ -134,15 +158,20 @@ class ResNet(nn.Module):
 
 		x = self.avgpool(x)
 		x = x.view(x.size(0), -1)
+		if args.q_a > 0:
+			x = self.quantize(x)
 		x = self.fc(x)
 
 		return x
-'''
 
+"""
 class ResNet(nn.Module):
 
 	def __init__(self, num_classes=1000):
 		super(ResNet, self).__init__()
+
+		self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, debug=args.debug_quant)
+
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
 		self.bn1 = nn.BatchNorm2d(64)
 		self.relu = nn.ReLU(inplace=True)
@@ -298,7 +327,7 @@ class ResNet(nn.Module):
 		x = x.view(x.size(0), -1)
 		x = self.fc(x)
 		return x
-
+"""
 
 def validate(val_loader, model, epoch=0):
 	model.eval()
@@ -346,7 +375,7 @@ else:
 if args.arch == 'mobilenet_v2':
 	model = models.mobilenet_v2(pretrained=args.pretrained)
 else:
-	model = ResNet()#BasicBlock)
+	model = ResNet(BasicBlock)
 	if args.pretrained:
 		model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
