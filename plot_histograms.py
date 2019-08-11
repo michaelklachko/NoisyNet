@@ -54,6 +54,8 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
 		alpha = 1    #2.0 / len(arrays)
 
 	for array, label, color in zip(arrays, labels, ['blue', 'red', 'green', 'black', 'magenta', 'cyan', 'orange', 'yellow', 'gray']):
+		if r != 0:  #only display labels for first row figures
+			label = ''
 		ax.hist(array.ravel(), alpha=alpha, bins=bins, density=False, color=color, range=range_, histtype=histtype, label=label, linewidth=1.5)
 
 	ax.set_title(title, fontsize=13)
