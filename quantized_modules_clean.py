@@ -111,7 +111,7 @@ def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, sto
 
 class QuantMeasure(nn.Module):
 
-	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, debug=False):
+	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, max_value=0, debug=False):
 		super(QuantMeasure, self).__init__()
 		self.register_buffer('running_min', torch.zeros(1))
 		self.register_buffer('running_max', torch.zeros(1))
@@ -119,6 +119,7 @@ class QuantMeasure(nn.Module):
 		self.num_bits = num_bits
 		self.stochastic = stochastic
 		self.debug = debug
+		self.max_value = max_value
 
 	def forward(self, input):
 		'''
@@ -132,8 +133,13 @@ class QuantMeasure(nn.Module):
 			max_value = self.running_max
 			print('\n\nmax_value:', max_value, 'actual max value:', input.max(), '\n\n')
 		'''
-		min_value = input.min()
-		max_value = input.max()
+
+		min_value = 0 #input.min()
+		if self.max_value > 0:
+			max_value = self.max_value
+		else:
+			max_value = input.max()
+
 		if self.training:
 			stoch = self.stochastic
 		else:

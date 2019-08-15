@@ -20,13 +20,14 @@ import torch.utils.model_zoo as model_zoo
 
 import utils
 from quantized_modules_clean import QuantMeasure
+from plot_histograms import plot_layers
 
 cudnn.benchmark = True
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR', help='path to dataset')
+parser.add_argument('--data', default='/data/imagenet/', metavar='DIR', help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18')
-parser.add_argument('-j', '--workers', default=16, type=int, metavar='N', help='number of data loading workers (default: 4)')
+parser.add_argument('-j', '--workers', default=10, type=int, metavar='N', help='dali: 10, dataparallel: 16')
 parser.add_argument('--epochs', default=90, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int, metavar='N')
@@ -46,7 +47,7 @@ parser.add_argument('--step-after', default=30, type=int, help='reduce LR after 
 parser.add_argument('--seed', default=None, type=int, help='seed for initializing training. ')
 parser.add_argument('--print_shapes', default=0, type=int, help='seed for initializing training. ')
 parser.add_argument('--num_sims', default=1, type=int, help='number of simulations.')
-parser.add_argument('--q_a', default=0, type=int, help='number of bits to quantize layer input')
+parser.add_argument('--q_a', default=4, type=int, help='number of bits to quantize layer input')
 parser.add_argument('--local_rank', default=0, type=int, help='')
 parser.add_argument('--world_size', default=1, type=int, help='')
 parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
@@ -65,7 +66,7 @@ parser.set_defaults(debug_quant=False)
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--dali', dest='dali', action='store_true')
 feature_parser.add_argument('--no-dali', dest='dali', action='store_false')
-parser.set_defaults(dali=False)
+parser.set_defaults(dali=True)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--dali_cpu', dest='dali_cpu', action='store_true')
@@ -76,6 +77,11 @@ feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--merge_bn', dest='merge_bn', action='store_true')
 feature_parser.add_argument('--no-merge_bn', dest='merge_bn', action='store_false')
 parser.set_defaults(merge_bn=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--plot', dest='plot', action='store_true')
+feature_parser.add_argument('--no-plot', dest='plot', action='store_false')
+parser.set_defaults(plot=False)
 
 warnings.filterwarnings("ignore", "Corrupt EXIF data", UserWarning)
 
@@ -105,8 +111,10 @@ if args.dali:
 			self.decode = ops.ImageDecoderRandomCrop(device=decoder_device, output_type=types.RGB, device_memory_padding=device_memory_padding,
 			                host_memory_padding=host_memory_padding, random_aspect_ratio=[0.8, 1.25], random_area=[0.1, 1.0], num_attempts=100)
 			self.res = ops.Resize(device=dali_device, resize_x=crop, resize_y=crop, interp_type=types.INTERP_TRIANGULAR)
+			#self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
+			            #image_type=types.RGB, mean=[0.485 * 255, 0.456 * 255, 0.406 * 255], std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
 			self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
-			            image_type=types.RGB, mean=[0.485 * 255, 0.456 * 255, 0.406 * 255], std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
+			            image_type=types.RGB, mean=[0, 0, 0], std=[255, 255, 255])
 			self.coin = ops.CoinFlip(probability=0.5)
 			print('DALI "{0}" variant'.format(dali_device))
 
@@ -125,8 +133,10 @@ if args.dali:
 			self.input = ops.FileReader(file_root=data_dir, shard_id=args.local_rank, num_shards=args.world_size, random_shuffle=False)
 			self.decode = ops.ImageDecoder(device="mixed", output_type=types.RGB)
 			self.res = ops.Resize(device="gpu", resize_shorter=size, interp_type=types.INTERP_TRIANGULAR)
+			#self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
+			            #image_type=types.RGB, mean=[0.485 * 255, 0.456 * 255, 0.406 * 255], std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
 			self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
-			            image_type=types.RGB, mean=[0.485 * 255, 0.456 * 255, 0.406 * 255], std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
+			            image_type=types.RGB, mean=[0, 0, 0], std=[255, 255, 255])
 
 		def define_graph(self):
 			self.jpegs, self.labels = self.input(name="Reader")
@@ -142,6 +152,8 @@ class BasicBlock(nn.Module):
 		self.downsample = downsample
 		self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
 		self.bn1 = nn.BatchNorm2d(planes)
+		self.layer1 = []
+		self.layer2 = []
 
 		if args.act_max > 0:
 			self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
@@ -155,34 +167,59 @@ class BasicBlock(nn.Module):
 			ds_in, ds_out, ds_strides = downsample
 			self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
 			self.bn3 = nn.BatchNorm2d(ds_out)
+			self.layer3 = []
 
 		self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, debug=args.debug_quant)
 
 	def forward(self, x):
+		'''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
+			[conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
 		if args.q_a > 0:
 			x = self.quantize(x)
 		residual = x
+		out = self.conv1(x)
+
+		if args.plot:
+			arrays.append([x.half()])
+			arrays.append([self.conv1.weight.half()])
+			arrays.append([out.half()])
+			'''
+			arrays.append([conv1_weight_sums.half()])
+			arrays.append([conv1_weight_sums_sep.half()])
+			arrays.append([conv1_weight_sums_blocked.half()])
+			arrays.append([conv1_weight_sums_sep_blocked.half()])
+			arrays.append([out_sep.half()])
+			arrays.append([out_blocked.half()])
+			arrays.append([out_sep_blocked.half()])
+			'''
+
 		if args.print_shapes:
 			print('\nblock input:', x.shape)
-		out = self.conv1(x)
-		if args.print_shapes:
 			print('conv1:', out.shape)
 
 		if args.merge_bn:
 			bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
 			       self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
 			out += bias
+			if args.plot:
+				arrays.append([bias.half()])
 		else:
 			out = self.bn1(out)
-		if args.print_shapes:
-			print('after bn:', out.shape)
 
 		out = self.relu(out)
 
 		if args.q_a > 0:
 			out = self.quantize(out)
 
+		if args.plot:
+			arrays.append([out.half()])
+
 		out = self.conv2(out)
+
+		if args.plot:
+			arrays.append([self.conv2.weight.half()])
+			arrays.append([out.half()])
+
 		if args.print_shapes:
 			print('conv2:', out.shape)
 
@@ -190,10 +227,10 @@ class BasicBlock(nn.Module):
 			bias = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * \
 			       self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
 			out += bias
+			if args.plot:
+				arrays.append([bias.half()])
 		else:
 			out = self.bn2(out)
-		if args.print_shapes:
-			print('after bn:', out.shape)
 
 		if self.downsample is not None:
 			residual = self.conv3(x)
@@ -205,11 +242,11 @@ class BasicBlock(nn.Module):
 				residual += bias
 			else:
 				residual = self.bn3(residual)
-			#residual = self.downsample(x)
 
 		out += residual
 		if args.print_shapes:
 			print('x + shortcut:', out.shape)
+
 		out = self.relu(out)
 		return out
 
@@ -253,28 +290,36 @@ class ResNet(nn.Module):
 			#downsample = nn.Sequential(nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride, bias=False), nn.BatchNorm2d(planes), )
 			downsample = (self.inplanes, planes, stride)
 
-		layers = [block(self.inplanes, planes, stride, downsample), block(planes, planes)]
+		blocks = [block(self.inplanes, planes, stride, downsample), block(planes, planes)]
 		self.inplanes = planes
 
-		return nn.Sequential(*layers)
+		return nn.Sequential(*blocks)
 
 	def forward(self, x):
 		if args.print_shapes:
 			print('RGB input:', x.shape)
 		if args.q_a > 0:
 			x = self.quantize(x)
+
+		if args.plot:
+			arrays.append([x.half()])
+
 		x = self.conv1(x)
 		if args.print_shapes:
 			print('first conv:', x.shape)
+
+		if args.plot:
+			arrays.append([self.conv1.weight.half()])
+			arrays.append([x.half()])
 
 		if args.merge_bn:
 			bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
 			       self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
 			x += bias
+			if args.plot:
+				arrays.append([bias.half()])
 		else:
 			x = self.bn1(x)
-		if args.print_shapes:
-			print('after bn:', x.shape)
 
 		x = self.relu(x)
 		x = self.maxpool(x)
@@ -292,6 +337,7 @@ class ResNet(nn.Module):
 		x = self.layer4(x)
 
 		x = self.avgpool(x)
+
 		if args.print_shapes:
 			print('\nafter avg pooling:', x.shape)
 		x = x.view(x.size(0), -1)
@@ -299,9 +345,46 @@ class ResNet(nn.Module):
 			print('reshaped:', x.shape)
 		if args.q_a > 0:
 			x = self.quantize(x)
+
+		if args.plot:
+			arrays.append([x.half()])
+
 		x = self.fc(x)
+
+		if args.plot:
+			arrays.append([self.fc.weight.half()])
+			arrays.append([x.half()])
+			arrays.append([self.fc.bias.half()])
+
 		if args.print_shapes:
 			print('\noutput:', x.shape)
+
+		if args.plot:
+			#names = ['input', 'weights', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked']
+			names = ['input', 'weights', 'vmm', 'bias']
+			print('\n\nPreparing arrays for plotting:\n')
+			layers = []
+			layer = []
+			print('\n\nlen(arrays) // len(names):', len(arrays), len(names), len(arrays) // len(names), '\n\n')
+			num_layers = len(arrays) // len(names)
+			for k in range(num_layers):
+				print('layer', k)
+				for j in range(len(names)):
+					print('\t', names[j])
+					layer.append([arrays[len(names)*k+j][0].detach().cpu().numpy()])
+				layers.append(layer)
+				layer = []
+
+			figsize = (len(names) * 7, num_layers * 6)
+			print('\nPlotting {}\n'.format(names))
+			var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
+			var_name = ''
+
+			plot_layers(num_layers=len(layers), models=['plotts/'], epoch=epoch, i=i, layers=layers,
+			            names=names, var=var_name, vars=[var_], figsize=figsize, acc=67.5, tag=args.tag)
+			print('\n\nSaved plots to current dir\n\n')
+			raise (SystemExit)
+
 
 		return x
 
@@ -363,6 +446,7 @@ criterion = nn.CrossEntropyLoss().cuda()
 optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
 best_acc = 0
+arrays = []
 
 if args.resume:
 	if os.path.isfile(args.resume):
@@ -372,7 +456,7 @@ if args.resume:
 		best_acc = checkpoint['best_acc']
 		#model.load_state_dict(checkpoint['state_dict'])
 		optimizer.load_state_dict(checkpoint['optimizer'])
-		print("=> loading checkpoint '{}' (epoch {})\n".format(args.resume, checkpoint['epoch']))
+		print("=> loaded checkpoint '{}' (epoch {})\n".format(args.resume, checkpoint['epoch']))
 		for saved_name, saved_param in checkpoint['state_dict'].items():
 			matched = False
 			#print(saved_name)
@@ -486,6 +570,10 @@ for epoch in range(args.start_epoch, args.epochs):
 		if i % args.print_freq == 0:
 			print('{}  Epoch {:>2d} Batch {:>4d}/{:d} | {:.2f}'.format(str(datetime.now())[:-7], epoch, i, train_loader_len, np.mean(tr_accs)))
 
+		if i == 10:
+			torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(),
+			            'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, args.tag + 'chkpt.pth')
+			raise(SystemExit)
 	acc = validate(val_loader, model, epoch=epoch)
 	if acc > best_acc:
 		best_acc = acc
@@ -493,7 +581,7 @@ for epoch in range(args.start_epoch, args.epochs):
 			tag = args.tag + 'noise_{:.2f}_'.format(args.noise)
 		else:
 			tag = args.tag
-		torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, tag + 'checkpoint.pth.tar')
+		torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, tag + 'chkpt.pth')
 
 	if args.dali:
 		train_loader.reset()

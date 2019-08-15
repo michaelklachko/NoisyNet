@@ -965,7 +965,8 @@ class Net(nn.Module):
 
 			for layer in layers: #de-torch arrays
 				for array in layer:
-					array[0] = array[0].detach().cpu().numpy()
+					array[0] = array[0].half().detach().cpu().numpy()  #.astype(np.float16)
+					print(array[0].type)
 
 			if args.plot:
 				figsize = (len(names) * 7, 4 * 6)
