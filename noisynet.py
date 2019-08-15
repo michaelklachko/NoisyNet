@@ -394,8 +394,8 @@ class Net(nn.Module):
 				self.conv1_sep = torch.cat((conv1_neg, conv1_pos), 0)
 				conv1_weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
 
-		if args.merge_bn and not self.training:
-			self.bias1 = self.bn1.bias.view(1, -1, 1, 1) - model.bn1.running_mean.data.view(1, -1, 1, 1) * model.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+		if args.merge_bn:
+			self.bias1 = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
 			self.conv1_ = self.conv1_no_bias + self.bias1
 		else:
 			self.conv1_ = self.conv1_no_bias
@@ -571,8 +571,8 @@ class Net(nn.Module):
 				conv2_weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
 				#raise(SystemExit)
 
-		if args.merge_bn and not self.training:
-			self.bias2 = self.bn2.bias.view(1, -1, 1, 1) - model.bn2.running_mean.data.view(1, -1, 1, 1) * model.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
+		if args.merge_bn:
+			self.bias2 = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
 			self.conv2_ = self.conv2_no_bias + self.bias2
 		else:
 			self.conv2_ = self.conv2_no_bias
@@ -712,8 +712,8 @@ class Net(nn.Module):
 				linear1_weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
 				#raise(SystemExit)
 
-		if args.merge_bn and not self.training:
-			self.bias3 = self.bn3.bias.view(1, -1) - model.bn3.running_mean.data.view(1, -1) * model.bn3.weight.data.view(1, -1) / torch.sqrt(model.bn3.running_var.data.view(1, -1) + 0.0000001)
+		if args.merge_bn:
+			self.bias3 = self.bn3.bias.view(1, -1) - self.bn3.running_mean.data.view(1, -1) * self.bn3.weight.data.view(1, -1) / torch.sqrt(self.bn3.running_var.data.view(1, -1) + 0.0000001)
 			self.linear1_ = self.linear1_no_bias + self.bias3
 		else:
 			self.linear1_ = self.linear1_no_bias
@@ -740,7 +740,7 @@ class Net(nn.Module):
 				elif (args.normal_dep > 0 and self.training) or (args.normal_dep > 0 and args.noise_test):
 					sigmas3 = (args.normal_dep * self.linear1_).pow(2)
 					noise3_distr = Normal(loc=0, scale=args.normal_dep * self.linear1_)
-					self.noise3 = noise3_distr.sample() 
+					self.noise3 = noise3_distr.sample()
 
 				else:
 					filter3 = torch.abs(self.linear1.weight)
@@ -862,8 +862,10 @@ class Net(nn.Module):
 				linear2_weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
 				#raise (SystemExit)
 
-		if args.merge_bn and not self.training:
-			self.bias4 = self.bn4.bias.view(1, -1) - model.bn4.running_mean.data.view(1, -1) * model.bn4.weight.data.view(1, -1) / torch.sqrt(model.bn4.running_var.data.view(1, -1) + 0.0000001)
+		if args.merge_bn:
+			if self.training:
+				print('\n\n************ Merging BatchNorm during training! **********\n\n')
+			self.bias4 = self.bn4.bias.view(1, -1) - self.bn4.running_mean.data.view(1, -1) * self.bn4.weight.data.view(1, -1) / torch.sqrt(self.bn4.running_var.data.view(1, -1) + 0.0000001)
 			self.linear2_ = self.linear2_no_bias + self.bias4
 		else:
 			self.linear2_ = self.linear2_no_bias
@@ -1247,13 +1249,15 @@ for current in current_vars:
 						model.load_state_dict(m)
 
 				#model.load_state_dict(torch.load(args.resume))
-				if args.merge_bn:# and not model.training:  #TODO are there cases where we want to enforce the second condition? Note that it's true here (model.train() in effect)
+
+				model.eval()
+
+				if args.merge_bn:
 					model.conv1.weight.data *= model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)  #(64,3,5,5) x (64)
 					model.conv2.weight.data *= model.bn2.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
 					model.linear1.weight.data *= model.bn3.weight.data.view(-1, 1) / torch.sqrt(model.bn3.running_var.data.view(-1, 1) + 0.0000001)
 					model.linear2.weight.data *= model.bn4.weight.data.view(-1, 1) / torch.sqrt(model.bn4.running_var.data.view(-1, 1) + 0.0000001)
 
-				model.eval()
 				te_accs = []
 
 				model_fname = args.resume.split('/')[-1]
