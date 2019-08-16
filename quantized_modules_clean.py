@@ -105,13 +105,13 @@ def linear_biprec(input, weight, bias=None):
 	return out1 + out2 - out1.detach()
 
 
-def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, stochastic=False, inplace=False, enforce_true_zero=False, out_half=False, debug=False):
+def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, stochastic=0.5, inplace=False, enforce_true_zero=False, out_half=False, debug=False):
 	return UniformQuantize().apply(x, num_bits, min_value, max_value, stochastic, inplace, enforce_true_zero, num_chunks, out_half, debug)
 
 
 class QuantMeasure(nn.Module):
 
-	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, max_value=0, debug=False):
+	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, min_value=0, max_value=0, debug=False):
 		super(QuantMeasure, self).__init__()
 		self.register_buffer('running_min', torch.zeros(1))
 		self.register_buffer('running_max', torch.zeros(1))
@@ -120,6 +120,7 @@ class QuantMeasure(nn.Module):
 		self.stochastic = stochastic
 		self.debug = debug
 		self.max_value = max_value
+		self.min_value = min_value
 
 	def forward(self, input):
 		'''
@@ -134,11 +135,15 @@ class QuantMeasure(nn.Module):
 			print('\n\nmax_value:', max_value, 'actual max value:', input.max(), '\n\n')
 		'''
 
-		min_value = 0 #input.min()
 		if self.max_value > 0:
 			max_value = self.max_value
 		else:
 			max_value = input.max()
+
+		if self.min_value < 0:
+			min_value = self.min_value
+		else:
+			min_value = input.min()
 
 		if self.training:
 			stoch = self.stochastic

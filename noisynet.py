@@ -391,7 +391,7 @@ class Net(nn.Module):
 				w_neg[w_neg >= 0] = 0
 				conv1_pos = F.conv2d(self.input, w_pos)
 				conv1_neg = F.conv2d(self.input, w_neg)
-				self.conv1_sep = torch.cat((conv1_neg, conv1_pos), 0)
+				conv1_sep = torch.cat((conv1_neg, conv1_pos), 0)
 				conv1_weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
 
 		if args.merge_bn:
@@ -567,7 +567,7 @@ class Net(nn.Module):
 				w_neg[w_neg >= 0] = 0
 				conv2_pos = F.conv2d(self.relu1, w_pos)
 				conv2_neg = F.conv2d(self.relu1, w_neg)
-				self.conv2_sep = torch.cat((conv2_neg, conv2_pos), 0)
+				conv2_sep = torch.cat((conv2_neg, conv2_pos), 0)
 				conv2_weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
 				#raise(SystemExit)
 
@@ -708,7 +708,7 @@ class Net(nn.Module):
 				w_neg[w_neg >= 0] = 0
 				linear1_pos = F.linear(self.relu2, w_pos)
 				linear1_neg = F.linear(self.relu2, w_neg)
-				self.linear1_sep = torch.cat((linear1_neg, linear1_pos), 0)
+				linear1_sep = torch.cat((linear1_neg, linear1_pos), 0)
 				linear1_weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
 				#raise(SystemExit)
 
@@ -858,7 +858,7 @@ class Net(nn.Module):
 				w_neg[w_neg >= 0] = 0
 				linear2_pos = F.linear(self.relu3, w_pos)
 				linear2_neg = F.linear(self.relu3, w_neg)
-				self.linear2_sep = torch.cat((linear2_neg, linear2_pos), 0)
+				linear2_sep = torch.cat((linear2_neg, linear2_pos), 0)
 				linear2_weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
 				#raise (SystemExit)
 
@@ -937,13 +937,13 @@ class Net(nn.Module):
 
 			names = ['input', 'weights', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked']
 			layer1 = [[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked], [conv1_weight_sums_sep_blocked],
-			          [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]
+			          [self.conv1_no_bias], [conv1_sep], [conv1_blocks], [conv1_sep_blocked]]
 			layer2 = [[self.relu1], [self.conv2.weight], [conv2_weight_sums], [conv2_weight_sums_sep], [conv2_weight_sums_blocked], [conv2_weight_sums_sep_blocked],
-			          [self.conv2_no_bias], [self.conv2_sep], [conv2_blocks], [conv2_sep_blocked]]
+			          [self.conv2_no_bias], [conv2_sep], [conv2_blocks], [conv2_sep_blocked]]
 			layer3 = [[self.relu2], [self.linear1.weight], [linear1_weight_sums], [linear1_weight_sums_sep], [linear1_weight_sums_blocked], [linear1_weight_sums_sep_blocked],
-			          [self.linear1_no_bias], [self.linear1_sep], [linear1_blocks], [linear1_sep_blocked]]
+			          [self.linear1_no_bias], [linear1_sep], [linear1_blocks], [linear1_sep_blocked]]
 			layer4 = [[self.relu3], [self.linear2.weight], [linear2_weight_sums], [linear2_weight_sums_sep], [linear2_weight_sums_blocked], [linear2_weight_sums_sep_blocked],
-			          [self.linear2_no_bias], [self.linear2_sep], [linear2_blocks], [linear2_sep_blocked]]
+			          [self.linear2_no_bias], [linear2_sep], [linear2_blocks], [linear2_sep_blocked]]
 			if args.merge_bn:
 				layer1.append([self.bias1])
 				layer2.append([self.bias2])
@@ -1604,8 +1604,6 @@ for current in current_vars:
 						g2_norm.backward(retain_graph=False)
 
 					if args.grad_clip > 0:
-						if epoch % 50 == 0 and i == 1110:
-							print('\n\nloss: {:.3f}\n\n'.format(loss.item()))
 						for n, p in model.named_parameters():
 							p.grad.data.clamp_(-args.grad_clip, args.grad_clip)
 
