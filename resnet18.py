@@ -29,7 +29,7 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--data', default='/data/imagenet/', metavar='DIR', help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18')
 parser.add_argument('-j', '--workers', default=10, type=int, metavar='N', help='dali: 10, dataparallel: 16')
-parser.add_argument('--epochs', default=90, type=int, metavar='N', help='number of total epochs to run')
+parser.add_argument('--epochs', default=110, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int, metavar='N')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
@@ -54,6 +54,8 @@ parser.add_argument('--world_size', default=1, type=int, help='')
 parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
 parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to avoid dividing by zero')
 parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
+parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
+parser.add_argument('--pctl', default=99.9, type=float, help='percentile to show when plotting')
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -172,13 +174,15 @@ class BasicBlock(nn.Module):
 			self.bn3 = nn.BatchNorm2d(ds_out)
 			self.layer3 = []
 
-		self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, debug=args.debug_quant)
+		if args.q_a > 0:
+			self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, debug=args.debug_quant)
+			self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, debug=args.debug_quant)
 
 	def forward(self, x):
 		'''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
 			[conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
 		if args.q_a > 0:
-			x = self.quantize(x)
+			x = self.quantize1(x)
 		residual = x
 		out = self.conv1(x)
 
@@ -260,14 +264,17 @@ class BasicBlock(nn.Module):
 		out = self.relu(out)
 
 		if args.q_a > 0:
-			out = self.quantize(out)
+			out = self.quantize2(out)
 
 		if args.plot:
 			arrays.append([out.half()])
 
 		conv2_input = out
-
+		#print('\n\nBefore: conv2_input:\n', conv2_input[2, 12, 3])
 		out = self.conv2(out)
+		#print('\nAfter: conv2_input:\n', conv2_input[2, 12, 3])
+		#print('\nAfter : out:\n', out[2, 12, 3])
+		#raise(SystemExit)
 
 		if args.plot:
 			with torch.no_grad():
@@ -375,7 +382,9 @@ class ResNet(nn.Module):
 		else:
 			self.relu = nn.ReLU(inplace=True)
 		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-		self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, debug=args.debug_quant)
+		if args.q_a > 0:
+			self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, debug=args.debug_quant)
+			self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, debug=args.debug_quant)
 
 		self.layer1 = self._make_layer(block, 64)
 
@@ -409,7 +418,7 @@ class ResNet(nn.Module):
 		if args.print_shapes:
 			print('RGB input:', x.shape)
 		if args.q_a > 0:
-			x = self.quantize(x)
+			x = self.quantize1(x)
 
 		if args.plot:
 			arrays.append([x.half()])
@@ -514,7 +523,7 @@ class ResNet(nn.Module):
 		if args.print_shapes:
 			print('reshaped:', x.shape)
 		if args.q_a > 0:
-			x = self.quantize(x)
+			x = self.quantize2(x)
 
 		if args.plot:
 			arrays.append([x.half()])
@@ -600,13 +609,12 @@ class ResNet(nn.Module):
 				layers.append(layer)
 				layer = []
 
-			figsize = (len(names) * 7, num_layers * 6)
 			print('\nPlotting {}\n'.format(names))
 			var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
 			var_name = ''
 
 			plot_layers(num_layers=len(layers), models=['plotts/'], epoch=epoch, i=i, layers=layers,
-			            names=names, var=var_name, vars=[var_], figsize=figsize, acc=best_acc, tag=args.tag)
+			            names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=best_acc, tag=args.tag)
 			print('\n\nSaved plots to current dir\n\n')
 			raise (SystemExit)
 
@@ -666,7 +674,8 @@ else:
 		model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
 model = torch.nn.DataParallel(model).cuda()
-utils.print_model(model, args)
+if args.resume is not None:
+	utils.print_model(model, args)
 criterion = nn.CrossEntropyLoss().cuda()
 optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
@@ -682,23 +691,40 @@ if args.resume:
 		#model.load_state_dict(checkpoint['state_dict'])
 		optimizer.load_state_dict(checkpoint['optimizer'])
 		print("=> loaded checkpoint '{}' (epoch {})\n".format(args.resume, checkpoint['epoch']))
+		utils.print_model(model, args)
 		for saved_name, saved_param in checkpoint['state_dict'].items():
 			matched = False
-			#print(saved_name)
+			if args.debug:
+				print(saved_name)
 			for name, param in model.named_parameters():
 				if name == saved_name:
 					matched = True
 					if args.debug:
 						print('\tmatched, copying...')
 					param.data = saved_param.data
-			if 'running' in saved_name:  #batchnorm stats are not in named_parameters
+			if 'running' in saved_name and 'bn' in saved_name:  #batchnorm stats are not in named_parameters
+				matched = True
+				#print('\n')
+				#if 'bn' not in saved_name:
+				#print(saved_name, saved_param)
+				if args.debug:
+					print('\tmatched, copying...')
+				m = model.state_dict()
+				#print('\nmodel.state_dict:')
+				#for name, p in m.items():
+					#print(name)
+				m.update({saved_name: saved_param})
+				model.load_state_dict(m)
+			if args.q_a > 0 and 'running' in saved_name and ('quantize1' in saved_name or 'quantize2' in saved_name):
+				matched = True
 				if args.debug:
 					print('\tmatched, copying...')
 				m = model.state_dict()
 				m.update({saved_name: saved_param})
 				model.load_state_dict(m)
 			elif not matched:
-				print('Not copying', saved_name)
+				#pass
+				print('\t\t\t************ Not copying', saved_name)
 
 		if args.merge_bn:
 			print('\n\nMerging batchnorm into weights...\n\n')
@@ -798,7 +824,8 @@ for epoch in range(args.start_epoch, args.epochs):
 		optimizer.step()
 
 		if i % args.print_freq == 0:
-			print('{}  Epoch {:>2d} Batch {:>4d}/{:d} | {:.2f}'.format(str(datetime.now())[:-7], epoch, i, train_loader_len, np.mean(tr_accs)))
+			print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {} | {:.2f}'.format(
+				str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs)))
 
 		if False and i == 10:
 			torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(),

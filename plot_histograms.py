@@ -37,7 +37,7 @@ def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title=
 	plt.show()
 
 
-def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, labels=['1'], log=True):
+def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, name=None, max_input=0, max_weight=0, pctl=99.9, labels=['1'], log=True):
 	ax = plt.subplot2grid((rows, columns), (r, c))
 	min_value = max_value = 0
 	if range_ is None:
@@ -45,6 +45,7 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
 			min_value = min(min_value, np.min(a))
 			max_value = max(max_value, np.max(a))
 		range_ = [min_value, max_value]
+	range_ = None
 
 	if len(arrays) == 1:
 		histtype = 'bar'
@@ -53,34 +54,68 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
 		histtype = 'step'
 		alpha = 1    #2.0 / len(arrays)
 
+	thr_neg = 0
+	thr_pos = 0
+
 	for array, label, color in zip(arrays, labels, ['blue', 'red', 'green', 'black', 'magenta', 'cyan', 'orange', 'yellow', 'gray']):
-		if r != 0:  #only display labels for first row figures
-			label = ''
+		#thr = max(abs(thr_neg), thr_pos)
+		if name != 'input' and name != 'weights':
+			if "weight" in name:
+				array = array / max_weight
+			else:
+				array = array / (max_weight * max_input)
+			thr_neg = np.percentile(array, 100 - pctl)
+			thr_pos = np.percentile(array, pctl)
+
+		if r == 0:  #only display accuracy on first row figures
+			label = label + ' {:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
+		else:
+			label = '{:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
+
+
 		ax.hist(array.ravel(), alpha=alpha, bins=bins, density=False, color=color, range=range_, histtype=histtype, label=label, linewidth=1.5)
 
-	ax.set_title(title, fontsize=13)
+	ax.set_title(title+name, fontsize=18)
 	#plt.xlabel('Value', fontsize=16)
 	#plt.ylabel('Frequency', fontsize=16)
-	plt.legend(loc='upper right')
-	plt.xticks(fontsize=14)
-	plt.yticks(fontsize=14)
+	#plt.legend(loc='upper right')
+	plt.xticks(fontsize=15)
+	plt.yticks(fontsize=15)
 	if log:
 		plt.semilogy()
-	ax.legend(loc='upper right', prop={'size': 12})
+	ax.legend(loc='upper right', prop={'size': 15})
 
 
-def plot_grid(layers, names, path=None, filename='', figsize=(30, 16), labels=['1']):
+def plot_grid(layers, names, path=None, filename='', pctl=99.9, labels=['1']):
+	figsize = (len(names) * 7, len(layers) * 6)
+	#figsize = (len(names) * 7, 2 * 6)
 	plt.figure(figsize=figsize)
 	rows = len(layers)
 	columns = len(layers[0])
+	thr = 0
 	for r, layer in zip(range(rows), layers):
 		for c, name in zip(range(columns), names):
-			place_fig(layer[c], rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ' + name, labels=labels)
-	plt.savefig(path + filename, dpi=300, bbox_inches='tight')
+			array = layer[c]
+			if name == 'input':
+				max_input = np.max(array[0])
+				array[0] = array[0] / max_input
+			if name == 'weights':
+				thr_neg = np.percentile(array[0], 100 - pctl)
+				thr_pos = np.percentile(array[0], pctl)
+				thr = max(abs(thr_neg), thr_pos)
+				#print('\nthr:', thr)
+				array[0][array[0] > thr] = thr
+				array[0][array[0] < -thr] = -thr
+				#print(name, 'np.max(array)', np.max(array[0]))
+				#print('before\n', array[0].ravel()[20:40])
+				array[0] = array[0] / thr
+				#print('after\n', array[0].ravel()[20:40])
+			place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ', name=name, pctl=pctl, max_input=max_input, max_weight=thr, labels=labels)
+	plt.savefig(path + filename, dpi=200, bbox_inches='tight')
 	plt.close()
 
 
-def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], figsize=(42, 24), acc=0.0, tag=''):
+def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], pctl=99.9, acc=0.0, tag=''):
 	accs = [acc]
 
 	if len(models) > 1:
@@ -105,7 +140,7 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
 					layers[l][col].append(model_layers[l][col][0])
 
 				if 'noise' in names:  #add noise/signal ratio array to each layer, if noise present
-					out = model_layers[l][2][0]
+					out = model_layers[l][2][0]  #TODO fix this fragility
 					noise = model_layers[l][-1][0]  #assume vmm out to be 3rd array in layer and noise last array:
 					full_range = np.max(out) - np.min(out)
 					clipped_range = np.percentile(out, 99) - np.percentile(out, 1)
@@ -127,7 +162,8 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
 	else:
 		filename = 'epoch_{:d}_iter_{:d}_{}.png'.format(epoch, i, tag)
 
-	plot_grid(layers, names, path=models[0], filename=filename, figsize=figsize, labels=labels)
+
+	plot_grid(layers, names, path=models[0], filename=filename, labels=labels, pctl=pctl)
 	print('\nplot is saved to {}\n'.format(filename))
 
 

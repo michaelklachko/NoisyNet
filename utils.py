@@ -143,14 +143,15 @@ def init_model(model, args, s=0):
         nn.init.constant_(model.w_max1, args.w_max1)
 
 
-def print_model(model, args):
+def print_model(model, args, full=False):
     print('\n\n****** Model Configuration ******\n\n')
     for arg in vars(args):
         print(arg, getattr(args, arg))
 
-    print('\n\n****** Model Graph ******\n\n')
-    for arg in vars(model):
-        print(arg, getattr(model, arg))
+    if full:
+        print('\n\n****** Model Graph ******\n\n')
+        for arg in vars(model):
+            print(arg, getattr(model, arg))
 
     print('\n\nModel parameters:\n')
     model_total = 0

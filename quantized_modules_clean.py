@@ -111,7 +111,7 @@ def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, sto
 
 class QuantMeasure(nn.Module):
 
-	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, min_value=0, max_value=0, debug=False):
+	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=False, debug=False):
 		super(QuantMeasure, self).__init__()
 		self.register_buffer('running_min', torch.zeros(1))
 		self.register_buffer('running_max', torch.zeros(1))
@@ -121,36 +121,59 @@ class QuantMeasure(nn.Module):
 		self.debug = debug
 		self.max_value = max_value
 		self.min_value = min_value
+		self.scale = scale
+		self.show_running = show_running
+		'''
+		print('self.scale', self.scale)
+		if True or torch.cuda.current_device() == 1:
+			self.show_running = True
+		else:
+			self.show_running = False
+		'''
 
 	def forward(self, input):
-		'''
-		if self.training:
-			min_value = input.detach().contiguous().view(input.size(0), -1).min(-1)[0].mean()
-			max_value = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
-			self.running_min.mul_(self.momentum).add_(min_value * (1 - self.momentum))
-			self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
-		else:
-			min_value = self.running_min
-			max_value = self.running_max
-			print('\n\nmax_value:', max_value, 'actual max value:', input.max(), '\n\n')
-		'''
 
+		if self.training:
+			#min_value = input.detach().contiguous().view(input.size(0), -1).min(-1)[0].mean()
+			#max_value = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
+			max_value = self.running_max
+			if max_value > 1:
+				max_value = max_value * self.scale
+			#self.running_min.mul_(self.momentum).add_(min_value * (1 - self.momentum))
+			#self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
+			if self.show_running:# and torch.cuda.current_device() == 1:
+				print('{} gpu {}  max value (running/actual) {:.1f}/{:.1f}'.format(
+					input.shape, torch.cuda.current_device(), self.running_max.item(), input.max().item()))
+				self.show_running = False
+		else:
+			#min_value = self.running_min
+			max_value = self.running_max
+			if max_value > 1:
+				max_value = max_value * self.scale
+			if self.show_running:# and torch.cuda.current_device() == 1:
+				print('{} gpu {}  min value {:.1f}  max value (running/actual) {:.1f}/{:.1f}'.format(
+					list(input.shape), torch.cuda.current_device(), self.min_value, max_value.item(), input.max().item()))
+				self.show_running = False
+
+		'''
 		if self.max_value > 0:
 			max_value = self.max_value
 		else:
-			max_value = input.max()
-
+			max_value = input.max() * self.scale
+		
 		if self.min_value < 0:
 			min_value = self.min_value
 		else:
-			min_value = input.min()
-
+			min_value = input.min() * self.scale
+		'''
+		if max_value > 1:
+			max_value = max_value * self.scale
 		if self.training:
 			stoch = self.stochastic
 		else:
 			stoch = 0
 
-		return quantize(input, self.num_bits, min_value=float(min_value), max_value=float(max_value), num_chunks=16, stochastic=stoch, debug=self.debug)
+		return quantize(input, self.num_bits, min_value=float(self.min_value), max_value=float(max_value), num_chunks=16, stochastic=stoch, debug=self.debug)
 
 
 class QConv2d(nn.Conv2d):
