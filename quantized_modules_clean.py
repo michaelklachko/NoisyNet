@@ -8,6 +8,8 @@ from torch.autograd.function import InplaceFunction, Function
 import torch.nn as nn
 import torch.nn.functional as F
 
+import numpy as np
+
 
 class UniformQuantize(InplaceFunction):
 
@@ -111,7 +113,7 @@ def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, sto
 
 class QuantMeasure(nn.Module):
 
-	def __init__(self, num_bits=8, momentum=0.1, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=False, debug=False):
+	def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=True, calculate_running=False, pctl=.999, debug=False):
 		super(QuantMeasure, self).__init__()
 		self.register_buffer('running_min', torch.zeros(1))
 		self.register_buffer('running_max', torch.zeros(1))
@@ -123,6 +125,8 @@ class QuantMeasure(nn.Module):
 		self.min_value = min_value
 		self.scale = scale
 		self.show_running = show_running
+		self.calculate_running = calculate_running
+		self.pctl = pctl
 		'''
 		print('self.scale', self.scale)
 		if True or torch.cuda.current_device() == 1:
@@ -132,28 +136,27 @@ class QuantMeasure(nn.Module):
 		'''
 
 	def forward(self, input):
-
-		if self.training:
-			#min_value = input.detach().contiguous().view(input.size(0), -1).min(-1)[0].mean()
-			#max_value = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
-			max_value = self.running_max
-			if max_value > 1:
-				max_value = max_value * self.scale
-			#self.running_min.mul_(self.momentum).add_(min_value * (1 - self.momentum))
-			#self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
-			if self.show_running:# and torch.cuda.current_device() == 1:
-				print('{} gpu {}  max value (running/actual) {:.1f}/{:.1f}'.format(
-					input.shape, torch.cuda.current_device(), self.running_max.item(), input.max().item()))
-				self.show_running = False
+		#max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
+		if self.calculate_running:
+			pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
+			max_value = pctl.item()
+			#self.running_max = max_value
+			self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
+			print('{} gpu {}  min value {:.1f}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(
+				list(input.shape), torch.cuda.current_device(), self.min_value, max_value, self.running_max.item(), input.max().item()))
 		else:
-			#min_value = self.running_min
-			max_value = self.running_max
-			if max_value > 1:
-				max_value = max_value * self.scale
-			if self.show_running:# and torch.cuda.current_device() == 1:
-				print('{} gpu {}  min value {:.1f}  max value (running/actual) {:.1f}/{:.1f}'.format(
-					list(input.shape), torch.cuda.current_device(), self.min_value, max_value.item(), input.max().item()))
-				self.show_running = False
+			max_value = self.running_max.item()
+
+		if max_value > 1:
+			max_value = max_value * self.scale
+
+		#print(list(input.shape), self.show_running)
+		if True:#list(input.shape) == [input.shape[0], 512] and self.show_running:# and torch.cuda.current_device() == 1:
+			#print('{} gpu {}  min value {:.1f}  max value (pctl/running/mean/actual) {:.1f}/{:.1f}/{:.1f}/{:.1f}'.format(
+				#list(input.shape), torch.cuda.current_device(), self.min_value, pctl.item(), self.running_max.item(), max_value_their.item(), input.max().item()))
+			print('{} gpu {}  min value {:.1f}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format
+				  (list(input.shape), torch.cuda.current_device(), self.min_value, max_value, self.running_max.item(), input.max().item()))
+			#self.show_running = False
 
 		'''
 		if self.max_value > 0:
@@ -166,8 +169,7 @@ class QuantMeasure(nn.Module):
 		else:
 			min_value = input.min() * self.scale
 		'''
-		if max_value > 1:
-			max_value = max_value * self.scale
+
 		if self.training:
 			stoch = self.stochastic
 		else:
