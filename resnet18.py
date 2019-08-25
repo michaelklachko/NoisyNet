@@ -22,7 +22,7 @@ import torch.utils.model_zoo as model_zoo
 
 import utils
 from quantized_modules_clean import QuantMeasure
-from plot_histograms import plot_layers
+from plot_histograms import get_layers, plot_layers
 #from mn import mobilenet_v2
 
 cudnn.benchmark = True
@@ -31,7 +31,7 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--data', default='/data/imagenet/', metavar='DIR', help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18')
 parser.add_argument('-j', '--workers', default=10, type=int, metavar='N', help='dali: 10, dataparallel: 16')
-parser.add_argument('--epochs', default=110, type=int, metavar='N', help='number of total epochs to run')
+parser.add_argument('--epochs', default=150, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int, metavar='N')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
@@ -57,6 +57,7 @@ parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to a
 parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
 parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
 parser.add_argument('--pctl', default=99.9, type=float, help='percentile to show when plotting')
+parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -94,13 +95,26 @@ feature_parser.add_argument('--no-print_shapes', dest='print_shapes', action='st
 parser.set_defaults(print_shapes=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--plot_basic', dest='plot_basic', action='store_true')
+feature_parser.add_argument('--no-plot_basic', dest='plot_basic', action='store_false')
+parser.set_defaults(plot_basic=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--calculate_running', dest='calculate_running', action='store_true')
 feature_parser.add_argument('--no-calculate_running', dest='calculate_running', action='store_false')
 parser.set_defaults(calculate_running=False)
 
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--plot_normalize', dest='plot_normalize', action='store_true')
+feature_parser.add_argument('--no-plot_normalize', dest='plot_normalize', action='store_false')
+parser.set_defaults(plot_normalize=False)
+
 warnings.filterwarnings("ignore", "Corrupt EXIF data", UserWarning)
 
 args = parser.parse_args()
+
+if args.gpu is not None:
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 if args.dali:
     try:
@@ -189,11 +203,11 @@ class ConvBNReLU(nn.Module):
 
     def forward(self, x):
         input = x
-        if self.kernel_size == 3 and args.q_a > 0:
+        if args.q_a > 0:# and self.kernel_size == 3
             input = self.quantize(input)
         x = self.conv(x)
 
-        if args.plot and self.kernel_size == 3:
+        if args.plot:# and self.kernel_size == 3:
             with torch.no_grad():
                 weight_sums = torch.abs(self.conv.weight).sum((1, 2, 3))
                 w_pos = self.conv.weight.clone()
@@ -212,14 +226,13 @@ class ConvBNReLU(nn.Module):
 
         if args.merge_bn:
             bias = self.bn.bias.view(1, -1, 1, 1) - self.bn.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn.running_var.data.view(1, -1, 1, 1) + 1e-7)
+                   self.bn.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn.running_var.data.view(1, -1, 1, 1) + args.eps)
             x = x + bias
         else:
             x = self.bn(x)
             bias = self.bn.bias
 
-        if args.plot and self.kernel_size == 3:
-
+        if args.plot:# and self.kernel_size == 3:
             arrays.append([bias.half()])
             arrays.append([weight_sums.half()])
             arrays.append([weight_sums_sep.half()])
@@ -249,19 +262,15 @@ class InvertedResidual(nn.Module):
     def forward(self, x):
         input = x
         if self.expand_ratio != 1:
-            if False and args.q_a > 0:
-                x = self.quantize1(x)
             x = self.conv1(x)
-        if False and args.q_a > 0:
-            x = self.quantize2(x)
         x = self.conv2(x)
-        if False and args.q_a > 0:
+        if args.q_a > 0:
             x = self.quantize3(x)
         x = self.conv3(x)
 
         if args.merge_bn:
             bias = self.bn.bias.view(1, -1, 1, 1) - self.bn.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn.running_var.data.view(1, -1, 1, 1) + 1e-7)
+                   self.bn.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn.running_var.data.view(1, -1, 1, 1) + args.eps)
             x = x + bias
         else:
             x = self.bn(x)
@@ -395,6 +404,7 @@ class BasicBlock(nn.Module):
 
         if downsample is not None:
             ds_in, ds_out, ds_strides = downsample
+            self.ds_strides = ds_strides
             self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
             self.bn3 = nn.BatchNorm2d(ds_out)
             self.layer3 = []
@@ -412,62 +422,7 @@ class BasicBlock(nn.Module):
         out = self.conv1(x)
 
         if args.plot:
-            with torch.no_grad():
-                blocks = []
-                pos_blocks = []
-                neg_blocks = []
-                weight_sums_blocked = []
-                weight_sums_sep_blocked = []
-                block_size = 64
-                dim = self.conv1.weight.shape[1]  #weights shape: (fm_out, fm_in, fs, fs)
-                num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
-                '''Weight blocking: fm_in is the dimension to split into blocks.  Merge filter size into fm_out, and extract dimx1x1 blocks. 
-                Split input (bs, fms, h, v) into blocks of fms dim, and convolve with weight blocks. This could probably be done with grouped convolutions, but meh'''
-                f = self.conv1.weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
-                for b in range(num_blocks):
-                    weight_block = f[:, b * block_size: (b + 1) * block_size, :, :]
-                    weight_block_pos = weight_block.clone()
-                    weight_block_neg = weight_block.clone()
-                    weight_block_pos[weight_block_pos <= 0] = 0
-                    weight_block_neg[weight_block_neg > 0] = 0
-                    if b == 0:
-                        print('\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape, '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel(), '\nWeight block sum(0) shape:',
-                              weight_block.sum((1, 2, 3)).shape, '\n\n')
-                    input_block = x[:, b * block_size: (b + 1) * block_size, :, :]
-                    blocks.append(F.conv2d(input_block, weight_block, stride=self.stride, padding=1))
-                    pos_blocks.append(F.conv2d(input_block, weight_block_pos, stride=self.stride, padding=1))
-                    neg_blocks.append(F.conv2d(input_block, weight_block_neg, stride=self.stride, padding=1))
-                    weight_sums_blocked.append(torch.abs(weight_block).sum((1, 2, 3)))
-                    weight_sums_sep_blocked.extend([weight_block_pos.sum((1, 2, 3)), weight_block_neg.sum((1, 2, 3))])
-
-                blocked = torch.cat(blocks, 1)  #conv_out shape: (bs, fms, h, v)
-                pos_blocks = torch.cat(pos_blocks, 1)
-                neg_blocks = torch.cat(neg_blocks, 1)
-                #print('\n\nconv2_pos_blocks:\n', pos_blocks.shape, '\n', pos_blocks[2,2])
-                #print('\n\nconv2_neg_blocks:\n', neg_blocks.shape, '\n', neg_blocks[2, 2], '\n\n')
-                #raise(SystemExit)
-                sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
-                #print('\nblocks shape', blocks.shape, '\n')
-                #print(blocks.detach().cpu().numpy()[60, 234, :8, :8])
-                weight_sums = torch.abs(self.conv1.weight).sum((1, 2, 3))
-                weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
-                weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
-
-                w_pos = self.conv1.weight.clone()
-                w_pos[w_pos < 0] = 0
-                w_neg = self.conv1.weight.clone()
-                w_neg[w_neg >= 0] = 0
-                pos = F.conv2d(x, w_pos, stride=self.stride, padding=1)
-                neg = F.conv2d(x, w_neg, stride=self.stride, padding=1)
-                sep = torch.cat((neg, pos), 0)
-                weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
-
-                arrays.append([x.half()])
-                arrays.append([self.conv1.weight.half()])
-                arrays.append([out.half()])
-                arrays.append([sep.half()])
-                arrays.append([blocked.half()])
-                arrays.append([sep_blocked.half()])
+            get_layers(arrays, x, self.conv1.weight, out, stride=self.stride, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.print_shapes:
             print('\nblock input:', x.shape)
@@ -479,10 +434,6 @@ class BasicBlock(nn.Module):
             out += bias
             if args.plot:
                 arrays.append([bias.half()])
-                arrays.append([weight_sums.half()])
-                arrays.append([weight_sums_sep.half()])
-                arrays.append([weight_sums_blocked.half()])
-                arrays.append([weight_sums_sep_blocked.half()])
         else:
             out = self.bn1(out)
 
@@ -491,72 +442,11 @@ class BasicBlock(nn.Module):
         if args.q_a > 0:
             out = self.quantize2(out)
 
-        if args.plot:
-            arrays.append([out.half()])
-
         conv2_input = out
-        #print('\n\nBefore: conv2_input:\n', conv2_input[2, 12, 3])
         out = self.conv2(out)
-        #print('\nAfter: conv2_input:\n', conv2_input[2, 12, 3])
-        #print('\nAfter : out:\n', out[2, 12, 3])
-        #raise(SystemExit)
 
         if args.plot:
-            with torch.no_grad():
-                blocks = []
-                pos_blocks = []
-                neg_blocks = []
-                weight_sums_blocked = []
-                weight_sums_sep_blocked = []
-                block_size = 64
-                dim = self.conv2.weight.shape[1]  #weights shape: (fm_out, fm_in, fs, fs)
-                num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
-                '''Weight blocking: fm_in is the dimension to split into blocks.  Merge filter size into fm_out, and extract dimx1x1 blocks. 
-                Split input (bs, fms, h, v) into blocks of fms dim, and convolve with weight blocks. This could probably be done with grouped convolutions, but meh'''
-                f = self.conv2.weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
-                for b in range(num_blocks):
-                    weight_block = f[:, b * block_size: (b + 1) * block_size, :, :]
-                    weight_block_pos = weight_block.clone()
-                    weight_block_neg = weight_block.clone()
-                    weight_block_pos[weight_block_pos <= 0] = 0
-                    weight_block_neg[weight_block_neg > 0] = 0
-                    if b == 0:
-                        print('\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape, '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel(), '\nWeight block sum(0) shape:',
-                              weight_block.sum((1, 2, 3)).shape, '\n\n')
-                    input_block = conv2_input[:, b * block_size: (b + 1) * block_size, :, :]
-                    blocks.append(F.conv2d(input_block, weight_block, padding=1))
-                    pos_blocks.append(F.conv2d(input_block, weight_block_pos, padding=1))
-                    neg_blocks.append(F.conv2d(input_block, weight_block_neg, padding=1))
-                    weight_sums_blocked.append(torch.abs(weight_block).sum((1, 2, 3)))
-                    weight_sums_sep_blocked.extend([weight_block_pos.sum((1, 2, 3)), weight_block_neg.sum((1, 2, 3))])
-
-                blocked = torch.cat(blocks, 1)  #conv_out shape: (bs, fms, h, v)
-                pos_blocks = torch.cat(pos_blocks, 1)
-                neg_blocks = torch.cat(neg_blocks, 1)
-                #print('\n\nconv2_pos_blocks:\n', pos_blocks.shape, '\n', pos_blocks[2,2])
-                #print('\n\nconv2_neg_blocks:\n', neg_blocks.shape, '\n', neg_blocks[2, 2], '\n\n')
-                #raise(SystemExit)
-                sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
-                #print('\nblocks shape', blocks.shape, '\n')
-                #print(blocks.detach().cpu().numpy()[60, 234, :8, :8])
-                weight_sums = torch.abs(self.conv2.weight).sum((1, 2, 3))
-                weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
-                weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
-
-                w_pos = self.conv2.weight.clone()
-                w_pos[w_pos < 0] = 0
-                w_neg = self.conv2.weight.clone()
-                w_neg[w_neg >= 0] = 0
-                pos = F.conv2d(conv2_input, w_pos, padding=1)
-                neg = F.conv2d(conv2_input, w_neg, padding=1)
-                sep = torch.cat((neg, pos), 0)
-                weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
-
-                arrays.append([self.conv2.weight.half()])
-                arrays.append([out.half()])
-                arrays.append([sep.half()])
-                arrays.append([blocked.half()])
-                arrays.append([sep_blocked.half()])
+            get_layers(arrays, conv2_input, self.conv2.weight, out, stride=1, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.print_shapes:
             print('conv2:', out.shape)
@@ -567,10 +457,6 @@ class BasicBlock(nn.Module):
             out += bias
             if args.plot:
                 arrays.append([bias.half()])
-                arrays.append([weight_sums.half()])
-                arrays.append([weight_sums_sep.half()])
-                arrays.append([weight_sums_blocked.half()])
-                arrays.append([weight_sums_sep_blocked.half()])
         else:
             out = self.bn2(out)
 
@@ -639,14 +525,11 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*blocks)
 
-    def forward(self, x):
+    def forward(self, x, epoch=0, i=0, acc=0.0):
         if args.print_shapes:
             print('RGB input:', x.shape)
         if args.q_a > 0:
             x = self.quantize1(x)
-
-        if args.plot:
-            arrays.append([x.half()])
 
         conv1_input = x
 
@@ -655,62 +538,7 @@ class ResNet(nn.Module):
             print('first conv:', x.shape)
 
         if args.plot:
-            with torch.no_grad():
-                blocks = []
-                pos_blocks = []
-                neg_blocks = []
-                weight_sums_blocked = []
-                weight_sums_sep_blocked = []
-                block_size = 64
-                dim = self.conv1.weight.shape[1]  #weights shape: (fm_out, fm_in, fs, fs)
-                num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
-                '''Weight blocking: fm_in is the dimension to split into blocks.  Merge filter size into fm_out, and extract dimx1x1 blocks. 
-                Split input (bs, fms, h, v) into blocks of fms dim, and convolve with weight blocks. This could probably be done with grouped convolutions, but meh'''
-                f = self.conv1.weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
-                for b in range(num_blocks):
-                    weight_block = f[:, b * block_size: (b + 1) * block_size, :, :]
-                    weight_block_pos = weight_block.clone()
-                    weight_block_neg = weight_block.clone()
-                    weight_block_pos[weight_block_pos <= 0] = 0
-                    weight_block_neg[weight_block_neg > 0] = 0
-                    if b == 0:
-                        print('\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape, '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel(), '\nWeight block sum(0) shape:',
-                              weight_block.sum((1, 2, 3)).shape, '\n\n')
-                    input_block = conv1_input[:, b * block_size: (b + 1) * block_size, :, :]
-                    blocks.append(F.conv2d(input_block, weight_block, stride=2, padding=3))
-                    pos_blocks.append(F.conv2d(input_block, weight_block_pos, stride=2, padding=3))
-                    neg_blocks.append(F.conv2d(input_block, weight_block_neg, stride=2, padding=3))
-                    weight_sums_blocked.append(torch.abs(weight_block).sum((1, 2, 3)))
-                    weight_sums_sep_blocked.extend([weight_block_pos.sum((1, 2, 3)), weight_block_neg.sum((1, 2, 3))])
-
-                blocked = torch.cat(blocks, 1)  #conv_out shape: (bs, fms, h, v)
-                pos_blocks = torch.cat(pos_blocks, 1)
-                neg_blocks = torch.cat(neg_blocks, 1)
-                #print('\n\nconv2_pos_blocks:\n', pos_blocks.shape, '\n', pos_blocks[2,2])
-                #print('\n\nconv2_neg_blocks:\n', neg_blocks.shape, '\n', neg_blocks[2, 2], '\n\n')
-                #raise(SystemExit)
-                sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
-                #print('\nblocks shape', blocks.shape, '\n')
-                #print(blocks.detach().cpu().numpy()[60, 234, :8, :8])
-                weight_sums = torch.abs(self.conv1.weight).sum((1, 2, 3))
-                weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
-                weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
-
-                w_pos = self.conv1.weight.clone()
-                w_pos[w_pos < 0] = 0
-                w_neg = self.conv1.weight.clone()
-                w_neg[w_neg >= 0] = 0
-                pos = F.conv2d(conv1_input, w_pos, stride=2, padding=3)
-                neg = F.conv2d(conv1_input, w_neg, stride=2, padding=3)
-                sep = torch.cat((neg, pos), 0)
-                weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
-
-                arrays.append([self.conv1.weight.half()])
-                arrays.append([x.half()])
-                arrays.append([sep.half()])
-                arrays.append([blocked.half()])
-                arrays.append([sep_blocked.half()])
-
+            get_layers(arrays, conv1_input, self.conv1.weight, x, stride=2, padding=3, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.merge_bn:
             bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
@@ -718,10 +546,6 @@ class ResNet(nn.Module):
             x += bias
             if args.plot:
                 arrays.append([bias.half()])
-                arrays.append([weight_sums.half()])
-                arrays.append([weight_sums_sep.half()])
-                arrays.append([weight_sums_blocked.half()])
-                arrays.append([weight_sums_sep_blocked.half()])
         else:
             x = self.bn1(x)
 
@@ -750,77 +574,28 @@ class ResNet(nn.Module):
         if args.q_a > 0:
             x = self.quantize2(x)
 
-        if args.plot:
-            arrays.append([x.half()])
-
         fc_input = x
 
         x = self.fc(x)
 
         if args.plot:
-            with torch.no_grad():
-                blocks = []
-                pos_blocks = []
-                neg_blocks = []
-                weight_sums_blocked = []
-                weight_sums_sep_blocked = []
-                block_size = 64
-                dim = self.fc.weight.shape[1]  #weights shape: (out, in)
-                num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
-                for b in range(num_blocks):
-                    weight_block = self.fc.weight[:, b * block_size: (b + 1) * block_size]
-                    weight_block_pos = weight_block.clone()
-                    weight_block_neg = weight_block.clone()
-                    weight_block_pos[weight_block_pos <= 0] = 0
-                    weight_block_neg[weight_block_neg > 0] = 0
-                    if b == 0:
-                        print('\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape, '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel(), '\nWeight block sum(0):\n',
-                              weight_block.sum(1).shape, '\n\n')
-                    input_block = fc_input[:, b * block_size: (b + 1) * block_size]
-                    blocks.append(F.linear(weight_block, input_block))
-                    pos_blocks.append(F.linear(input_block, weight_block_pos))
-                    neg_blocks.append(F.linear(input_block, weight_block_neg))
-                    weight_sums_blocked.append(torch.abs(weight_block).sum(1))
-                    weight_sums_sep_blocked.extend([weight_block_pos.sum(1), weight_block_neg.sum(1)])
+            get_layers(arrays, fc_input, self.fc.weight, x, layer='linear', basic=args.plot_basic, debug=args.debug)
 
-                blocked = torch.cat(blocks, 1)
-                #print('\nblocks shape', blocks.shape, '\n')
-                #print(blocks.detach().cpu().numpy()[:8, :8])
-                pos_blocks = torch.cat(pos_blocks, 1)
-                neg_blocks = torch.cat(neg_blocks, 1)
-                sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
-                weight_sums = torch.abs(self.fc.weight).sum(1)
-                weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
-                weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
-
-                w_pos = self.fc.weight.clone()
-                w_pos[w_pos < 0] = 0
-                w_neg = self.fc.weight.clone()
-                w_neg[w_neg >= 0] = 0
-                pos = F.linear(fc_input, w_pos)
-                neg = F.linear(fc_input, w_neg)
-                sep = torch.cat((neg, pos), 0)
-                weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
-
-                arrays.append([self.fc.weight.half()])
-                arrays.append([x.half()])
-                arrays.append([sep.half()])
-                arrays.append([blocked.half()])
-                arrays.append([sep_blocked.half()])
-
-                arrays.append([self.fc.bias.half()])
-                arrays.append([weight_sums.half()])
-                arrays.append([weight_sums_sep.half()])
-                arrays.append([weight_sums_blocked.half()])
-                arrays.append([weight_sums_sep_blocked.half()])
+        if args.merge_bn and args.plot:
+            arrays.append([self.fc.bias.half()])
 
         if args.print_shapes:
             print('\noutput:', x.shape)
 
         if args.plot:
-            names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'bias',
-                     'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
-            #names = ['input', 'weights', 'vmm', 'bias']
+            if args.plot_basic:
+                names = ['input', 'weights', 'vmm']
+            else:
+                names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
+
+            if args.merge_bn:
+                names.append('bias')
+
             print('\n\nPreparing arrays for plotting:\n')
             layers = []
             layer = []
@@ -839,15 +614,14 @@ class ResNet(nn.Module):
             var_name = ''
 
             plot_layers(num_layers=len(layers), models=['plotts/'], epoch=epoch, i=i, layers=layers,
-                        names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=best_acc, tag=args.tag)
+                        names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.plot_normalize)
             print('\n\nSaved plots to current dir\n\n')
             raise (SystemExit)
-
 
         return x
 
 
-def validate(val_loader, model, epoch=0):
+def validate(val_loader, model, epoch=0, plot_acc=0.0):
     model.eval()
     te_accs = []
     with torch.no_grad():
@@ -856,11 +630,11 @@ def validate(val_loader, model, epoch=0):
                 input = data[0]["data"]
                 target = data[0]["label"].squeeze().cuda().long()
                 input_var = Variable(input)
-                output = model(input_var)
+                output = model(input_var, epoch=epoch, i=i, acc=plot_acc)
             else:
                 images, target = data
                 target = target.cuda(non_blocking=True)
-                output = model(images)
+                output = model(images, epoch=epoch, i=i, acc=plot_acc)
             if i == 0:
                 args.print_shapes = False
             acc = accuracy(output, target)
@@ -900,9 +674,10 @@ else:
         model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
 model = torch.nn.DataParallel(model).cuda()
+model = model
 if args.resume is not None:
     utils.print_model(model, args)
-criterion = nn.CrossEntropyLoss().cuda()
+criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
 optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
 best_acc = 0
@@ -928,11 +703,13 @@ if args.resume:
                 print(saved_name)
             for name, param in model.named_parameters():
                 if name == saved_name:
+                    #print('1')
                     matched = True
                     if args.debug:
                         print('\tmatched, copying...')
                     param.data = saved_param.data
             if 'running' in saved_name and 'bn' in saved_name:  #batchnorm stats are not in named_parameters
+                #print('2')
                 matched = True
                 #print('\n')
                 #if 'bn' not in saved_name:
@@ -945,7 +722,7 @@ if args.resume:
                     #print(name)
                 m.update({saved_name: saved_param})
                 model.load_state_dict(m)
-            if args.q_a > 0 and 'quantize' in saved_name:# and ('quantize1' in saved_name or 'quantize2' in saved_name):
+            if args.q_a > 0 and ('quantize1' in saved_name or 'quantize2' in saved_name):
                 matched = True
                 if args.debug:
                     print('\tmatched, copying...')
@@ -987,17 +764,20 @@ if args.resume:
                         bn_prefix = '.'.join(bn_prefix)
                         bn_weight = bn_prefix + '.bn.weight'
                         bn_running_var = bn_prefix + '.bn.running_var'
-                    if 'conv' in name and 'bn' not in name:
+                    if 'conv' in name and 'bn' not in name and 'quantize' not in name:
                         if args.debug:
                             print('bn_prefix', bn_prefix)
                             print('bn_weight', bn_weight)
                             print('bn_running_var', bn_running_var)
+                            print(param.data.shape)
+                            print(model.state_dict()[bn_weight].data.shape)
+                            print(model.state_dict()[bn_running_var].data.shape)
                         #print('model.state_dict()[bn_weight]', model.state_dict()[bn_weight].shape)
                         #print('model.state_dict()[bn_running_var]', model.state_dict()[bn_running_var].shape)
                         param.data *= model.state_dict()[bn_weight].data.view(-1, 1, 1, 1) / \
                                       torch.sqrt(model.state_dict()[bn_running_var].data.view(-1, 1, 1, 1) + args.eps)
-                        if name == 'module.features.15.conv2.conv.weight':
-                            print('\n\nAfter:\n', param[0, :10])
+                        if name == 'module.features.15.conv2.conv.weight' and args.debug:
+                            print('\n\nAfter:\n', param[0, :10])#, model.module.features.15.conv2.conv.weight[0, :10])
             else:
                 for name, param in model.state_dict().items():  #model.named_parameters():
                     if name == 'module.conv1.weight':
@@ -1119,7 +899,7 @@ if args.evaluate:
         print('\n\n{}\n{}\n\n\n'.format(vars, acc_d))
         raise(SystemExit)
     else:
-        validate(val_loader, model, epoch=b_epoch)
+        validate(val_loader, model, epoch=b_epoch, plot_acc=b_acc)
         raise(SystemExit)
 
 #for param_group in optimizer.param_groups:
@@ -1141,13 +921,13 @@ for epoch in range(args.start_epoch, args.epochs):
             train_loader_len = int(train_loader._size / args.batch_size)
             input_var = Variable(input)
             target_var = Variable(target)
-            output = model(input_var)
+            output = model(input_var, epoch=epoch, i=i)
             loss = criterion(output, target_var)
         else:
             images, target = data
             train_loader_len = len(train_loader)
             target = target.cuda(non_blocking=True)
-            output = model(images)
+            output = model(images, epoch=epoch, i=i)
             loss = criterion(output, target)
 
         if i == 0:
@@ -1183,7 +963,7 @@ for epoch in range(args.start_epoch, args.epochs):
             tag = args.tag + 'noise_{:.2f}_'.format(args.noise)
         else:
             tag = args.tag
-        torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, tag + 'chkpt.pth')
+        torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, tag + '.pth')
 
     if args.dali:
         train_loader.reset()

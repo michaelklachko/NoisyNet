@@ -8,9 +8,7 @@ from torch.autograd.function import InplaceFunction, Function
 import torch.nn as nn
 import torch.nn.functional as F
 
-import numpy as np
-
-
+'''
 class UniformQuantize(InplaceFunction):
 
 	@classmethod
@@ -107,12 +105,70 @@ def linear_biprec(input, weight, bias=None):
 	return out1 + out2 - out1.detach()
 
 
-def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, stochastic=0.5, inplace=False, enforce_true_zero=False, out_half=False, debug=False):
-	return UniformQuantize().apply(x, num_bits, min_value, max_value, stochastic, inplace, enforce_true_zero, num_chunks, out_half, debug)
+#def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, stochastic=0.5, inplace=False, enforce_true_zero=False, out_half=False, debug=False):
+	#return UniformQuantize().apply(x, num_bits, min_value, max_value, stochastic, inplace, enforce_true_zero, num_chunks, out_half, debug)
+
+'''
+class UniformQuantize(InplaceFunction):
+
+	@classmethod
+	def forward(cls, ctx, input, num_bits=8, min_value=None, max_value=None, stochastic=0.5, inplace=False, debug=False):
+		ctx.inplace = inplace
+		ctx.num_bits = num_bits
+		ctx.min_value = min_value
+		ctx.max_value = max_value
+		ctx.stochastic = stochastic
+
+		if ctx.inplace:
+			ctx.mark_dirty(input)
+			output = input
+		else:
+			output = input.clone()
+
+		qmin = 0.
+		qmax = 2.**num_bits - 1.
+		scale = (max_value - min_value) / (qmax - qmin)
+		scale = max(scale, 1e-6)   #TODO figure out how to set this robustly! causes nans
+
+		with torch.no_grad():
+			output.add_(-min_value).div_(scale).add_(qmin)
+			if debug:
+				print('\nnum_bits {:d} qmin {} qmax {} min_value {} max_value {} actual max value {}'.format(num_bits, qmin, qmax, min_value, max_value, input.max()))
+				print('\ninitial input\n', input[0, 0])
+				print('\nnormalized input\n', output[0, 0])
+			if ctx.stochastic > 0:
+				noise = output.new(output.shape).uniform_(-ctx.stochastic, ctx.stochastic)
+				output.add_(noise)
+				if debug:
+					print('\nadding noise (stoch={:.1f})\n{}\n'.format(ctx.stochastic, output[0,0]))
+
+			output.clamp_(qmin, qmax).round_()  # quantize
+			if debug:
+				print('\nquantized\n', output[0, 0])
+
+			output.add_(-qmin).mul_(scale).add_(min_value)  # dequantize
+		if debug:
+			print('\ndenormalized output\n', output[0, 0])
+		return output
+
+	@staticmethod
+	def backward(ctx, grad_output):
+		grad_input = grad_output
+		return grad_input, None, None, None, None, None, None
 
 
 class QuantMeasure(nn.Module):
-
+	'''
+	https://arxiv.org/abs/1308.3432
+	https://arxiv.org/abs/1903.05662
+	https://arxiv.org/abs/1903.01061
+	https://arxiv.org/abs/1906.03193
+	https://github.com/cooooorn/Pytorch-XNOR-Net/blob/master/util/util.py
+	https://github.com/jiecaoyu/XNOR-Net-PyTorch/blob/master/ImageNet/networks/util.py
+	https://github.com/Wizaron/binary-stochastic-neurons/blob/master/utils.py
+	https://github.com/penhunt/full-quantization-DNN/blob/master/nets/quant_uni_type.py
+	https://github.com/salu133445/bmusegan/blob/master/musegan/utils/ops.py
+	'''
 	def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=True, calculate_running=False, pctl=.999, debug=False):
 		super(QuantMeasure, self).__init__()
 		self.register_buffer('running_min', torch.zeros(1))
@@ -146,12 +202,14 @@ class QuantMeasure(nn.Module):
 				list(input.shape), torch.cuda.current_device(), self.min_value, max_value, self.running_max.item(), input.max().item()))
 		else:
 			max_value = self.running_max.item()
+			max_value = input.max()
 
 		if max_value > 1:
 			max_value = max_value * self.scale
+			#max_value = input.max()
 
 		#print(list(input.shape), self.show_running)
-		if True:#list(input.shape) == [input.shape[0], 512] and self.show_running:# and torch.cuda.current_device() == 1:
+		if False:#list(input.shape) == [input.shape[0], 512] and self.show_running:# and torch.cuda.current_device() == 1:
 			#print('{} gpu {}  min value {:.1f}  max value (pctl/running/mean/actual) {:.1f}/{:.1f}/{:.1f}/{:.1f}'.format(
 				#list(input.shape), torch.cuda.current_device(), self.min_value, pctl.item(), self.running_max.item(), max_value_their.item(), input.max().item()))
 			print('{} gpu {}  min value {:.1f}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format
@@ -175,7 +233,13 @@ class QuantMeasure(nn.Module):
 		else:
 			stoch = 0
 
-		return quantize(input, self.num_bits, min_value=float(self.min_value), max_value=float(max_value), num_chunks=16, stochastic=stoch, debug=self.debug)
+		num_chunks = 16
+		enforce_true_zero = False
+		inplace = False
+		out_half = False
+		#return quantize(input, self.num_bits, min_value=float(self.min_value), max_value=float(max_value), num_chunks=16, stochastic=stoch, debug=self.debug)
+		#return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, inplace, enforce_true_zero, num_chunks, out_half, self.debug)
+		return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, inplace, self.debug)
 
 
 class QConv2d(nn.Conv2d):

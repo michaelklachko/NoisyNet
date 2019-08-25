@@ -4,6 +4,104 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
+import torch
+import torch.nn.functional as F
+
+def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv', basic=False, debug=False):
+	print('Input:', list(input.shape), 'weights:', list(weight.shape), 'layer type:', layer)
+	with torch.no_grad():
+		arrays.append([input.half()])
+		arrays.append([weight.half()])
+		arrays.append([output.half()])
+
+		if basic:
+			return
+
+		blocks = []
+		pos_blocks = []
+		neg_blocks = []
+		weight_sums_blocked = []
+		weight_sums_sep_blocked = []
+		block_size = 64
+		dim = weight.shape[1]  #weights shape: (fm_out, fm_in, fs, fs)
+
+		num_blocks = max(dim // block_size, 1)  #min 1 block, must be cleanly divisible!
+
+		if layer == 'conv':
+			'''Weight blocking: fm_in is the dimension to split into blocks.  Merge filter size into fm_out, and extract dimx1x1 blocks. 
+			Split input (bs, fms, h, v) into blocks of fms dim, and convolve with weight blocks. This could probably be done with grouped convolutions, but meh'''
+			f = weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
+
+		for b in range(num_blocks):
+			if layer == 'conv':
+				input_block = input[:, b * block_size: (b + 1) * block_size, :, :]
+				weight_block = f[:, b * block_size: (b + 1) * block_size, :, :]
+			elif layer == 'linear':
+				input_block = input[:, b * block_size: (b + 1) * block_size]
+				weight_block = weight[:, b * block_size: (b + 1) * block_size]
+			weight_block_pos = weight_block.clone()
+			weight_block_neg = weight_block.clone()
+			weight_block_pos[weight_block_pos <= 0] = 0
+			weight_block_neg[weight_block_neg > 0] = 0
+			if b == 0 and debug:
+				print('\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape,
+				      '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel())
+			if layer == 'conv':
+				if b == 0 and debug:
+					print('\nWeight block sum(0) shape:', weight_block.sum((1, 2, 3)).shape, '\n\n')
+				blocks.append(F.conv2d(input_block, weight_block, stride=stride, padding=padding))
+				pos_blocks.append(F.conv2d(input_block, weight_block_pos, stride=stride, padding=padding))
+				neg_blocks.append(F.conv2d(input_block, weight_block_neg, stride=stride, padding=padding))
+				weight_sums_blocked.append(torch.abs(weight_block).sum((1, 2, 3)))
+				weight_sums_sep_blocked.extend([weight_block_pos.sum((1, 2, 3)), weight_block_neg.sum((1, 2, 3))])
+			elif layer == 'linear':
+				if b == 0 and debug:
+					print('\nWeight block sum(0) shape:', weight_block.sum(1).shape, '\n\n')
+				blocks.append(F.linear(weight_block, input_block))
+				pos_blocks.append(F.linear(input_block, weight_block_pos))
+				neg_blocks.append(F.linear(input_block, weight_block_neg))
+				weight_sums_blocked.append(torch.abs(weight_block).sum(1))
+				weight_sums_sep_blocked.extend([weight_block_pos.sum(1), weight_block_neg.sum(1)])
+
+		blocked = torch.cat(blocks, 1)  #conv_out shape: (bs, fms, h, v)
+		pos_blocks = torch.cat(pos_blocks, 1)
+		neg_blocks = torch.cat(neg_blocks, 1)
+		#print('\n\nconv2_pos_blocks:\n', pos_blocks.shape, '\n', pos_blocks[2,2])
+		#print('\n\nconv2_neg_blocks:\n', neg_blocks.shape, '\n', neg_blocks[2, 2], '\n\n')
+		#raise(SystemExit)
+		sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
+		#print('\nblocks shape', blocks.shape, '\n')
+		#print(blocks.detach().cpu().numpy()[60, 234, :8, :8])
+		weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
+		weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
+
+		w_pos = weight.clone()
+		w_pos[w_pos < 0] = 0
+		w_neg = weight.clone()
+		w_neg[w_neg >= 0] = 0
+		if layer == 'conv':
+			weight_sums = torch.abs(weight).sum((1, 2, 3))
+			pos = F.conv2d(input, w_pos, stride=stride, padding=padding)
+			neg = F.conv2d(input, w_neg, stride=stride, padding=padding)
+			weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
+		elif layer == 'linear':
+			weight_sums = torch.abs(weight).sum(1)
+			pos = F.linear(input, w_pos)
+			neg = F.linear(input, w_neg)
+			weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
+
+		sep = torch.cat((neg, pos), 0)
+
+		arrays.append([sep.half()])
+		arrays.append([blocked.half()])
+		arrays.append([sep_blocked.half()])
+
+		arrays.append([weight_sums.half()])
+		arrays.append([weight_sums_sep.half()])
+		arrays.append([weight_sums_blocked.half()])
+		arrays.append([weight_sums_sep_blocked.half()])
+
+		
 def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=False):
 	fig = plt.figure(figsize=(8, 6))
 	ax = fig.add_subplot(111)
@@ -37,7 +135,7 @@ def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title=
 	plt.show()
 
 
-def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, name=None, max_input=0, max_weight=0, pctl=99.9, labels=['1'], log=True):
+def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, name=None, max_input=0, max_weight=0, pctl=99.9, labels=['1'], log=True, normalize=True):
 	ax = plt.subplot2grid((rows, columns), (r, c))
 	min_value = max_value = 0
 	if range_ is None:
@@ -58,20 +156,20 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
 	thr_pos = 0
 
 	for array, label, color in zip(arrays, labels, ['blue', 'red', 'green', 'black', 'magenta', 'cyan', 'orange', 'yellow', 'gray']):
-		#thr = max(abs(thr_neg), thr_pos)
-		if name != 'input' and name != 'weights':
-			if "weight" in name:
-				array = array / max_weight
+		if normalize:
+			#thr = max(abs(thr_neg), thr_pos)
+			if name != 'input' and name != 'weights':
+				if "weight" in name:
+					array = array / max_weight
+				else:
+					array = array / (max_weight * max_input)
+				thr_neg = np.percentile(array, 100 - pctl)
+				thr_pos = np.percentile(array, pctl)
+
+			if r == 0:  #only display accuracy on first row figures
+				label = label + ' {:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
 			else:
-				array = array / (max_weight * max_input)
-			thr_neg = np.percentile(array, 100 - pctl)
-			thr_pos = np.percentile(array, pctl)
-
-		if r == 0:  #only display accuracy on first row figures
-			label = label + ' {:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
-		else:
-			label = '{:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
-
+				label = '{:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
 
 		ax.hist(array.ravel(), alpha=alpha, bins=bins, density=False, color=color, range=range_, histtype=histtype, label=label, linewidth=1.5)
 
@@ -86,36 +184,39 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
 	ax.legend(loc='upper right', prop={'size': 15})
 
 
-def plot_grid(layers, names, path=None, filename='', pctl=99.9, labels=['1']):
+def plot_grid(layers, names, path=None, filename='', pctl=99.9, labels=['1'], normalize=True):
 	figsize = (len(names) * 7, len(layers) * 6)
 	#figsize = (len(names) * 7, 2 * 6)
 	plt.figure(figsize=figsize)
 	rows = len(layers)
 	columns = len(layers[0])
 	thr = 0
+	max_input = 0
+
 	for r, layer in zip(range(rows), layers):
 		for c, name in zip(range(columns), names):
 			array = layer[c]
-			if name == 'input':
-				max_input = np.max(array[0])
-				array[0] = array[0] / max_input
-			if name == 'weights':
-				thr_neg = np.percentile(array[0], 100 - pctl)
-				thr_pos = np.percentile(array[0], pctl)
-				thr = max(abs(thr_neg), thr_pos)
-				#print('\nthr:', thr)
-				array[0][array[0] > thr] = thr
-				array[0][array[0] < -thr] = -thr
-				#print(name, 'np.max(array)', np.max(array[0]))
-				#print('before\n', array[0].ravel()[20:40])
-				array[0] = array[0] / thr
-				#print('after\n', array[0].ravel()[20:40])
-			place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ', name=name, pctl=pctl, max_input=max_input, max_weight=thr, labels=labels)
+			if normalize:
+				if name == 'input':
+					max_input = np.max(array[0])
+					array[0] = array[0] / max_input
+				if name == 'weights':
+					thr_neg = np.percentile(array[0], 100 - pctl)
+					thr_pos = np.percentile(array[0], pctl)
+					thr = max(abs(thr_neg), thr_pos)
+					#print('\nthr:', thr)
+					array[0][array[0] > thr] = thr
+					array[0][array[0] < -thr] = -thr
+					#print(name, 'np.max(array)', np.max(array[0]))
+					#print('before\n', array[0].ravel()[20:40])
+					array[0] = array[0] / thr
+					#print('after\n', array[0].ravel()[20:40])
+			place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ', name=name, pctl=pctl, max_input=max_input, max_weight=thr, labels=labels, normalize=normalize)
 	plt.savefig(path + filename, dpi=200, bbox_inches='tight')
 	plt.close()
 
 
-def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], pctl=99.9, acc=0.0, tag=''):
+def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], pctl=99.9, acc=0.0, tag='', normalize=True):
 	accs = [acc]
 
 	if len(models) > 1:
@@ -160,10 +261,10 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
 	if len(models) > 1:
 		filename = 'comparison_of_{}'.format(var)
 	else:
-		filename = 'epoch_{:d}_iter_{:d}_{}.png'.format(epoch, i, tag)
+		filename = 'epoch_{:d}_iter_{:d}_acc_{:.2f}_{}.png'.format(epoch, i, acc, tag)
 
 
-	plot_grid(layers, names, path=models[0], filename=filename, labels=labels, pctl=pctl)
+	plot_grid(layers, names, path=models[0], filename=filename, labels=labels, pctl=pctl, normalize=normalize)
 	print('\nplot is saved to {}\n'.format(filename))
 
 
