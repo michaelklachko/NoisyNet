@@ -191,7 +191,7 @@ class QuantMeasure(nn.Module):
 			self.show_running = False
 		'''
 
-	def forward(self, input):
+	def forward(self, input, i):
 		#max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
 		if self.calculate_running:
 			pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))

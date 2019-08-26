@@ -13,7 +13,7 @@ import numpy as np
 import math
 
 import utils
-from quantized_modules_clean import QConv2d, QLinear, QuantMeasure
+from quant_orig import QConv2d, QLinear, QuantMeasure
 from plot_histograms import plot_layers
 
 torch.backends.cudnn.benchmark = True

@@ -19,9 +19,11 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
+from models.resnet import ResNet18
+from models.mobilenet import mobilenet_v2
 
 import utils
-from quantized_modules_clean import QuantMeasure
+from quant import QuantMeasure
 from plot_histograms import get_layers, plot_layers
 #from mn import mobilenet_v2
 
@@ -85,6 +87,11 @@ feature_parser.add_argument('--no-merge_bn', dest='merge_bn', action='store_fals
 parser.set_defaults(merge_bn=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--fp16', dest='fp16', action='store_true')
+feature_parser.add_argument('--no-fp16', dest='fp16', action='store_false')
+parser.set_defaults(fp16=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--plot', dest='plot', action='store_true')
 feature_parser.add_argument('--no-plot', dest='plot', action='store_false')
 parser.set_defaults(plot=False)
@@ -92,7 +99,7 @@ parser.set_defaults(plot=False)
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--print_shapes', dest='print_shapes', action='store_true')
 feature_parser.add_argument('--no-print_shapes', dest='print_shapes', action='store_false')
-parser.set_defaults(print_shapes=False)
+parser.set_defaults(print_shapes=True)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--plot_basic', dest='plot_basic', action='store_true')
@@ -175,452 +182,6 @@ if args.dali:
             return [output, self.labels]
 
 
-def _make_divisible(v, divisor, min_value=None):
-    """
-    It ensures that all layers have a channel number that is divisible by 8
-    """
-    if min_value is None:
-        min_value = divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
-    if new_v < 0.9 * v:
-        new_v += divisor
-    return new_v
-
-
-class ConvBNReLU(nn.Module):
-    def __init__(self, in_planes, out_planes, kernel_size=3, stride=1, groups=1):
-        self.padding = (kernel_size - 1) // 2
-        super(ConvBNReLU, self).__init__()
-        self.conv = nn.Conv2d(in_planes, out_planes, kernel_size, stride, self.padding, groups=groups, bias=False)
-        self.bn = nn.BatchNorm2d(out_planes)
-        self.relu = nn.ReLU6(inplace=True)
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.groups = groups
-        if args.q_a > 0:
-            self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug_quant)
-
-    def forward(self, x):
-        input = x
-        if args.q_a > 0:# and self.kernel_size == 3
-            input = self.quantize(input)
-        x = self.conv(x)
-
-        if args.plot:# and self.kernel_size == 3:
-            with torch.no_grad():
-                weight_sums = torch.abs(self.conv.weight).sum((1, 2, 3))
-                w_pos = self.conv.weight.clone()
-                w_pos[w_pos < 0] = 0
-                w_neg = self.conv.weight.clone()
-                w_neg[w_neg >= 0] = 0
-                pos = F.conv2d(input, w_pos, stride=self.stride, padding=self.padding, groups=self.groups)
-                neg = F.conv2d(input, w_neg, stride=self.stride, padding=self.padding, groups=self.groups)
-                sep = torch.cat((neg, pos), 0)
-                weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
-
-                arrays.append([input.half()])
-                arrays.append([self.conv.weight.half()])
-                arrays.append([x.half()])
-                arrays.append([sep.half()])
-
-        if args.merge_bn:
-            bias = self.bn.bias.view(1, -1, 1, 1) - self.bn.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn.running_var.data.view(1, -1, 1, 1) + args.eps)
-            x = x + bias
-        else:
-            x = self.bn(x)
-            bias = self.bn.bias
-
-        if args.plot:# and self.kernel_size == 3:
-            arrays.append([bias.half()])
-            arrays.append([weight_sums.half()])
-            arrays.append([weight_sums_sep.half()])
-        x = self.relu(x)
-        return x
-
-class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, stride, expand_ratio):
-        super(InvertedResidual, self).__init__()
-        self.stride = stride
-        self.expand_ratio = expand_ratio
-        assert stride in [1, 2]
-
-        hidden_dim = int(round(inp * expand_ratio))
-        self.use_res_connect = self.stride == 1 and inp == oup
-
-        self.conv1 = ConvBNReLU(inp, hidden_dim, kernel_size=1)
-        self.conv2 = ConvBNReLU(hidden_dim, hidden_dim, stride=stride, groups=hidden_dim)
-        self.conv3 = nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False)
-        self.bn = nn.BatchNorm2d(oup)
-
-        if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug_quant)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug_quant)
-            self.quantize3 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug_quant)
-
-    def forward(self, x):
-        input = x
-        if self.expand_ratio != 1:
-            x = self.conv1(x)
-        x = self.conv2(x)
-        if args.q_a > 0:
-            x = self.quantize3(x)
-        x = self.conv3(x)
-
-        if args.merge_bn:
-            bias = self.bn.bias.view(1, -1, 1, 1) - self.bn.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn.running_var.data.view(1, -1, 1, 1) + args.eps)
-            x = x + bias
-        else:
-            x = self.bn(x)
-            #bias = self.bn.bias
-
-        if self.use_res_connect:
-            return x + input
-        else:
-            return x
-
-
-class MobileNetV2(nn.Module):
-    def __init__(self, num_classes=1000, width_mult=1.0, inverted_residual_setting=None, round_nearest=8):
-        """
-            num_classes (int): Number of classes
-            width_mult (float): Width multiplier - adjusts number of channels in each layer by this amount
-            inverted_residual_setting: Network structure
-            round_nearest (int): Round the number of channels in each layer to be a multiple of this number
-            Set to 1 to turn off rounding
-        """
-        super(MobileNetV2, self).__init__()
-        block = InvertedResidual
-        input_channel = 32
-        last_channel = 1280
-
-        if inverted_residual_setting is None:
-            inverted_residual_setting = [
-                # t, c, n, s
-                [1, 16, 1, 1],
-                [6, 24, 2, 2],
-                [6, 32, 3, 2],
-                [6, 64, 4, 2],
-                [6, 96, 3, 1],
-                [6, 160, 3, 2],
-                [6, 320, 1, 1],
-            ]
-
-        # only check the first element, assuming user knows t,c,n,s are required
-        if len(inverted_residual_setting) == 0 or len(inverted_residual_setting[0]) != 4:
-            raise ValueError("inverted_residual_setting should be non-empty or a 4-element list, got {}".format(inverted_residual_setting))
-
-        input_channel = _make_divisible(input_channel * width_mult, round_nearest)
-        self.last_channel = _make_divisible(last_channel * max(1.0, width_mult), round_nearest)
-        features = [ConvBNReLU(3, input_channel, stride=2)]
-
-        for t, c, n, s in inverted_residual_setting:
-            output_channel = _make_divisible(c * width_mult, round_nearest)
-            for i in range(n):
-                stride = s if i == 0 else 1
-                features.append(block(input_channel, output_channel, stride, expand_ratio=t))
-                input_channel = output_channel
-
-        features.append(ConvBNReLU(input_channel, self.last_channel, kernel_size=1))
-
-        self.features = nn.Sequential(*features)
-
-        self.drop1 = nn.Dropout(0.2)
-
-        self.fc1 = nn.Linear(self.last_channel, num_classes)
-
-        if args.q_a > 0:
-            self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug_quant)
-
-        #self.classifier = nn.Sequential(nn.Dropout(0.2), nn.Linear(self.last_channel, num_classes), )
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.mean([2, 3])
-        x = self.drop1(x)
-        if args.q_a > 0:
-            x = self.quantize(x)
-        x = self.fc1(x)
-
-        if args.plot:
-            names = ['input', 'weights', 'vmm', 'vmm diff', 'bias', 'weight sums', 'weight sums diff']
-            #names = ['input', 'weights', 'vmm', 'bias']
-            print('\n\nPreparing arrays for plotting:\n')
-            layers = []
-            layer = []
-            print('\n\nlen(arrays) // len(names):', len(arrays), len(names), len(arrays) // len(names), '\n\n')
-            num_layers = len(arrays) // len(names)
-            for k in range(num_layers):
-                print('layer', k, names)
-                for j in range(len(names)):
-                    #print('\t', names[j])
-                    layer.append([arrays[len(names)*k+j][0].detach().cpu().numpy()])
-                layers.append(layer)
-                layer = []
-
-            print('\nPlotting {}\n'.format(names))
-            var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
-            var_name = ''
-            best_acc = 64.2
-            plot_layers(num_layers=len(layers), models=['plotts/'], epoch=68, i=0, layers=layers,
-                        names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=best_acc, tag=args.tag)
-            print('\n\nSaved plots to current dir\n\n')
-            raise (SystemExit)
-
-        return x
-
-
-class BasicBlock(nn.Module):
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
-        self.downsample = downsample
-        self.stride = stride
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.layer1 = []
-        self.layer2 = []
-
-        if args.act_max > 0:
-            self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
-        else:
-            self.relu = nn.ReLU(inplace=True)
-
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-
-        if downsample is not None:
-            ds_in, ds_out, ds_strides = downsample
-            self.ds_strides = ds_strides
-            self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
-            self.bn3 = nn.BatchNorm2d(ds_out)
-            self.layer3 = []
-
-        if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug_quant)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug_quant)
-
-    def forward(self, x):
-        '''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
-            [conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
-        if args.q_a > 0:
-            x = self.quantize1(x)
-        residual = x
-        out = self.conv1(x)
-
-        if args.plot:
-            get_layers(arrays, x, self.conv1.weight, out, stride=self.stride, layer='conv', basic=args.plot_basic, debug=args.debug)
-
-        if args.print_shapes:
-            print('\nblock input:', x.shape)
-            print('conv1:', out.shape)
-
-        if args.merge_bn:
-            bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
-            out += bias
-            if args.plot:
-                arrays.append([bias.half()])
-        else:
-            out = self.bn1(out)
-
-        out = self.relu(out)
-
-        if args.q_a > 0:
-            out = self.quantize2(out)
-
-        conv2_input = out
-        out = self.conv2(out)
-
-        if args.plot:
-            get_layers(arrays, conv2_input, self.conv2.weight, out, stride=1, layer='conv', basic=args.plot_basic, debug=args.debug)
-
-        if args.print_shapes:
-            print('conv2:', out.shape)
-
-        if args.merge_bn:
-            bias = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
-            out += bias
-            if args.plot:
-                arrays.append([bias.half()])
-        else:
-            out = self.bn2(out)
-
-        if self.downsample is not None:
-            residual = self.conv3(x)
-            if args.print_shapes:
-                print('conv3 (shortcut downsampling):', out.shape)
-            if args.merge_bn:
-                bias = self.bn3.bias.view(1, -1, 1, 1) - self.bn3.running_mean.data.view(1, -1, 1, 1) * \
-                       self.bn3.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn3.running_var.data.view(1, -1, 1, 1) + args.eps)
-                residual += bias
-            else:
-                residual = self.bn3(residual)
-
-        out += residual
-        if args.print_shapes:
-            print('x + shortcut:', out.shape)
-
-        out = self.relu(out)
-        return out
-
-
-class ResNet(nn.Module):
-
-    inplanes = None
-
-    def __init__(self, block, num_classes=1000):
-        self.inplanes = 64
-        super(ResNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        if args.act_max > 0:
-            self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
-        else:
-            self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug_quant)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug_quant)
-
-        self.layer1 = self._make_layer(block, 64)
-
-        self.layer2 = self._make_layer(block, 128, stride=2)
-        self.layer3 = self._make_layer(block, 256, stride=2)
-        self.layer4 = self._make_layer(block, 512, stride=2)
-
-        self.avgpool = nn.AvgPool2d(7, stride=1)
-        self.fc = nn.Linear(512, num_classes)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
-    def _make_layer(self, block, planes, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes:
-            #downsample = nn.Sequential(nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride, bias=False), nn.BatchNorm2d(planes), )
-            downsample = (self.inplanes, planes, stride)
-
-        blocks = [block(self.inplanes, planes, stride, downsample), block(planes, planes)]
-        self.inplanes = planes
-
-        return nn.Sequential(*blocks)
-
-    def forward(self, x, epoch=0, i=0, acc=0.0):
-        if args.print_shapes:
-            print('RGB input:', x.shape)
-        if args.q_a > 0:
-            x = self.quantize1(x)
-
-        conv1_input = x
-
-        x = self.conv1(x)
-        if args.print_shapes:
-            print('first conv:', x.shape)
-
-        if args.plot:
-            get_layers(arrays, conv1_input, self.conv1.weight, x, stride=2, padding=3, layer='conv', basic=args.plot_basic, debug=args.debug)
-
-        if args.merge_bn:
-            bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
-                   self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
-            x += bias
-            if args.plot:
-                arrays.append([bias.half()])
-        else:
-            x = self.bn1(x)
-
-        x = self.relu(x)
-        x = self.maxpool(x)
-        if args.print_shapes:
-            print('after max pooling:', x.shape)
-        x = self.layer1(x)
-        if args.print_shapes:
-            print('\nDownsampling the input:')
-        x = self.layer2(x)
-        if args.print_shapes:
-            print('\nDownsampling the input:')
-        x = self.layer3(x)
-        if args.print_shapes:
-            print('\nDownsampling the input:')
-        x = self.layer4(x)
-
-        x = self.avgpool(x)
-
-        if args.print_shapes:
-            print('\nafter avg pooling:', x.shape)
-        x = x.view(x.size(0), -1)
-        if args.print_shapes:
-            print('reshaped:', x.shape)
-        if args.q_a > 0:
-            x = self.quantize2(x)
-
-        fc_input = x
-
-        x = self.fc(x)
-
-        if args.plot:
-            get_layers(arrays, fc_input, self.fc.weight, x, layer='linear', basic=args.plot_basic, debug=args.debug)
-
-        if args.merge_bn and args.plot:
-            arrays.append([self.fc.bias.half()])
-
-        if args.print_shapes:
-            print('\noutput:', x.shape)
-
-        if args.plot:
-            if args.plot_basic:
-                names = ['input', 'weights', 'vmm']
-            else:
-                names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
-
-            if args.merge_bn:
-                names.append('bias')
-
-            print('\n\nPreparing arrays for plotting:\n')
-            layers = []
-            layer = []
-            print('\n\nlen(arrays) // len(names):', len(arrays), len(names), len(arrays) // len(names), '\n\n')
-            num_layers = len(arrays) // len(names)
-            for k in range(num_layers):
-                print('layer', k, names)
-                for j in range(len(names)):
-                    #print('\t', names[j])
-                    layer.append([arrays[len(names)*k+j][0].detach().cpu().numpy()])
-                layers.append(layer)
-                layer = []
-
-            print('\nPlotting {}\n'.format(names))
-            var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
-            var_name = ''
-
-            plot_layers(num_layers=len(layers), models=['plotts/'], epoch=epoch, i=i, layers=layers,
-                        names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.plot_normalize)
-            print('\n\nSaved plots to current dir\n\n')
-            raise (SystemExit)
-
-        return x
-
-
 def validate(val_loader, model, epoch=0, plot_acc=0.0):
     model.eval()
     te_accs = []
@@ -630,34 +191,26 @@ def validate(val_loader, model, epoch=0, plot_acc=0.0):
                 input = data[0]["data"]
                 target = data[0]["label"].squeeze().cuda().long()
                 input_var = Variable(input)
+                if args.fp16:
+                    input_var = input_var.half()
+                    #target_var = target_var.half()
                 output = model(input_var, epoch=epoch, i=i, acc=plot_acc)
             else:
                 images, target = data
+                if args.fp16:
+                    input = input.half()
+                    target = target.half()
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i, acc=plot_acc)
             if i == 0:
                 args.print_shapes = False
-            acc = accuracy(output, target)
+            acc = utils.accuracy(output, target)
             te_accs.append(acc)
 
         mean_acc = np.mean(te_accs)
         print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
 
     return mean_acc
-
-
-def adjust_learning_rate(optimizer, epoch, args):
-    lr = args.lr * (0.1 ** (epoch // args.step_after))
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-
-def accuracy(output, target):
-    with torch.no_grad():
-        batch_size = target.size(0)
-        pred = output.data.max(1)[1]
-        acc = pred.eq(target.data).sum().item() * 100.0 / batch_size
-        return acc
 
 
 if args.pretrained or args.resume:
@@ -667,17 +220,23 @@ else:
 
 if args.arch == 'mobilenet_v2':
     #model = models.mobilenet_v2(pretrained=args.pretrained)
-    model = MobileNetV2()
+    #model = MobileNetV2()
+    model = mobilenet_v2(args)
 else:
-    model = ResNet(BasicBlock)
+    model = ResNet18(args)
     if args.pretrained:
         model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
 model = torch.nn.DataParallel(model).cuda()
-model = model
-if args.resume is not None:
-    utils.print_model(model, args)
+if args.fp16:
+    model = model.half()
+if args.debug:
+    utils.print_model(model, args, full=True)
 criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
+if args.fp16:  #loss scaling for SGD with weight decay:
+    #criterion *= 100.0
+    args.lr /= 100.0
+    args.weight_decay *= 100.0
 optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
 best_acc = 0
@@ -692,7 +251,8 @@ if args.resume:
         #model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         print("=> loaded checkpoint '{}' (epoch {})\n".format(args.resume, checkpoint['epoch']))
-        utils.print_model(model, args, full=False)
+        if args.debug:
+            utils.print_model(model, args, full=True)
         print('\n\n')
         for name, param in model.state_dict().items():
             print(name)
@@ -729,19 +289,19 @@ if args.resume:
                 m = model.state_dict()
                 m.update({saved_name: saved_param})
                 model.load_state_dict(m)
-            elif not matched:
+            elif not matched and args.debug:
                 #pass
                 print('\t\t\t************ Not copying', saved_name)
+        if args.debug:
+            print('\n\nCurrent model')
+            for name, param in model.state_dict().items():
+                print(name)
+            print('\n\n')
 
-        print('\n\nCurrent model')
-        for name, param in model.state_dict().items():
-            print(name)
-        print('\n\n')
-
-        print('\n\ncheckpoint:\n\n')
-        for name, param in checkpoint['state_dict'].items():
-            print(name)
-        print('\n\n')
+            print('\n\ncheckpoint:\n\n')
+            for name, param in checkpoint['state_dict'].items():
+                print(name)
+            print('\n\n')
 
         #model.load_state_dict(checkpoint['state_dict'])
 
@@ -855,10 +415,6 @@ if args.evaluate:
             if args.debug:
                 print('\n\nbefore:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
-            #for n, p in model.named_parameters():
-                #orig_params.append(p.clone())
-
-
             for s in range(args.num_sims):
                 te_accuracies_dist = []
                 with torch.no_grad():
@@ -883,8 +439,6 @@ if args.evaluate:
                 if args.debug:
                     print('after:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
-                #for (n, p), orig_p in zip(model.named_parameters(), orig_params):
-                    #p.data = orig_p.clone().data
                 model.load_state_dict(orig_m)
 
                 if args.debug:
@@ -902,11 +456,10 @@ if args.evaluate:
         validate(val_loader, model, epoch=b_epoch, plot_acc=b_acc)
         raise(SystemExit)
 
-#for param_group in optimizer.param_groups:
-    #print('wd:', param_group['weight_decay'])
 
 for epoch in range(args.start_epoch, args.epochs):
-    adjust_learning_rate(optimizer, epoch, args)
+    utils.adjust_learning_rate(optimizer, epoch, args)
+    print('lr:', args.lr, 'wd', args.weight_decay)
     #for param_group in optimizer.param_groups:
         #param_group['lr'] = args.lr
         #param_group['weight_decay'] = args.weight_decay
@@ -921,18 +474,30 @@ for epoch in range(args.start_epoch, args.epochs):
             train_loader_len = int(train_loader._size / args.batch_size)
             input_var = Variable(input)
             target_var = Variable(target)
+            if args.fp16:
+                input_var = input_var.half()
+                #target_var = target_var.half()
             output = model(input_var, epoch=epoch, i=i)
-            loss = criterion(output, target_var)
+            if args.fp16:
+                loss = 100.0 * criterion(output, target_var)
+            else:
+                loss = criterion(output, target_var)
         else:
             images, target = data
+            if args.fp16:
+                images = images.half()
+                target = target.half()
             train_loader_len = len(train_loader)
             target = target.cuda(non_blocking=True)
             output = model(images, epoch=epoch, i=i)
-            loss = criterion(output, target)
+            if args.fp16:
+                loss = 100.0 * criterion(output, target)
+            else:
+                loss = criterion(output, target)
 
         if i == 0:
             args.print_shapes = False
-        acc = accuracy(output, target)
+        acc = utils.accuracy(output, target)
         tr_accs.append(acc)
         optimizer.zero_grad()
         loss.backward()
@@ -950,10 +515,8 @@ for epoch in range(args.start_epoch, args.epochs):
                 str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs)))
 
         if args.calculate_running and i == 0:
-            #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(),
-                        #'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, args.tag + 'chkpt.pth')
             torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(),
-                         'best_acc': 69.1, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
+                         'best_acc': 0.0, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
             raise(SystemExit)
 
     acc = validate(val_loader, model, epoch=epoch)

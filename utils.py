@@ -5,6 +5,20 @@ import torch
 import torch.nn as nn
 
 
+def adjust_learning_rate(optimizer, epoch, args):
+    lr = args.lr * (0.1 ** (epoch // args.step_after))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
+def accuracy(output, target):
+    with torch.no_grad():
+        batch_size = target.size(0)
+        pred = output.data.max(1)[1]
+        acc = pred.eq(target.data).sum().item() * 100.0 / batch_size
+        return acc
+
+
 def load_cifar(args):
     print('\n\n\n\t***************** dataset:', args.dataset, '*******************\n\n\n')
 
