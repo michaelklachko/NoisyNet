@@ -17,7 +17,7 @@ import torch.utils.data
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-import torchvision.models as models
+#import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
 from models.resnet import ResNet18
 from models.mobilenet import mobilenet_v2
@@ -99,7 +99,7 @@ parser.set_defaults(plot=False)
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--print_shapes', dest='print_shapes', action='store_true')
 feature_parser.add_argument('--no-print_shapes', dest='print_shapes', action='store_false')
-parser.set_defaults(print_shapes=True)
+parser.set_defaults(print_shapes=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--plot_basic', dest='plot_basic', action='store_true')
@@ -228,10 +228,14 @@ else:
         model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
 model = torch.nn.DataParallel(model).cuda()
+
 if args.fp16:
     model = model.half()
+
 if args.debug:
     utils.print_model(model, args, full=True)
+    args.print_shapes = True
+
 criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
 if args.fp16:  #loss scaling for SGD with weight decay:
     #criterion *= 100.0
@@ -250,13 +254,10 @@ if args.resume:
         best_acc = checkpoint['best_acc']
         #model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
-        print("=> loaded checkpoint '{}' (epoch {})\n".format(args.resume, checkpoint['epoch']))
+        print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, checkpoint['epoch']))
         if args.debug:
             utils.print_model(model, args, full=True)
-        print('\n\n')
-        for name, param in model.state_dict().items():
-            print(name)
-        print('\n\n')
+
         for saved_name, saved_param in checkpoint['state_dict'].items():
             matched = False
             if args.debug:
@@ -347,19 +348,15 @@ if args.resume:
                         bn_weight = 'module.bn1.weight'
                         bn_running_var = 'module.bn1.running_var'
                     elif 'conv' in name:
-                        if args.debug:
-                            print(name)
                         bn_prefix = name[:16]
-                        if args.debug:
-                            print('bn_prefix', bn_prefix)
                         bn_num = name[20]
-                        if args.debug:
-                            print('bn_num', bn_num)
                         bn_weight = bn_prefix + 'bn' + bn_num + '.weight'
-                        if args.debug:
-                            print('bn_weight', bn_weight)
                         bn_running_var = bn_prefix + 'bn' + bn_num + '.running_var'
                         if args.debug:
+                            print(name)
+                            print('bn_prefix', bn_prefix)
+                            print('bn_num', bn_num)
+                            print('bn_weight', bn_weight)
                             print('bn_running_var', bn_running_var)
                     elif 'downsample.0' in name:
                         bn_prefix = name[:16]
@@ -514,7 +511,7 @@ for epoch in range(args.start_epoch, args.epochs):
             print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {} | {:.2f}'.format(
                 str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs)))
 
-        if args.calculate_running and i == 0:
+        if False and args.calculate_running and i == 0:
             torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(),
                          'best_acc': 0.0, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
             raise(SystemExit)
