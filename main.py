@@ -243,7 +243,28 @@ if args.fp16:  #loss scaling for SGD with weight decay:
     args.weight_decay *= 100.0
 optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
-best_acc = 0
+traindir = os.path.join(args.data, 'train')
+valdir = os.path.join(args.data, 'val')
+
+if args.dali:
+    pipe = HybridTrainPipe(batch_size=args.batch_size, num_threads=args.workers, device_id=args.local_rank, data_dir=traindir, crop=224, dali_cpu=args.dali_cpu)
+    pipe.build()
+    train_loader = DALIClassificationIterator(pipe, size=int(pipe.epoch_size("Reader") / args.world_size))
+
+    pipe = HybridValPipe(batch_size=args.batch_size, num_threads=args.workers, device_id=args.local_rank, data_dir=valdir, crop=224, size=256)
+    pipe.build()
+    val_loader = DALIClassificationIterator(pipe, size=int(pipe.epoch_size("Reader") / args.world_size))
+
+else:
+    train_dataset = datasets.ImageFolder(traindir, transforms.Compose([transforms.RandomResizedCrop(224),
+                    transforms.RandomHorizontalFlip(), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ]))
+    val_dataset = datasets.ImageFolder(valdir, transforms.Compose([transforms.Resize(256),
+                    transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ]))
+
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=False)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=False)
+
+
 arrays = []
 
 if args.resume:
@@ -371,35 +392,14 @@ if args.resume:
     else:
         print("=> no checkpoint found at '{}'".format(args.resume))
 
-traindir = os.path.join(args.data, 'train')
-valdir = os.path.join(args.data, 'val')
-
-if args.dali:
-    pipe = HybridTrainPipe(batch_size=args.batch_size, num_threads=args.workers, device_id=args.local_rank, data_dir=traindir, crop=224, dali_cpu=args.dali_cpu)
-    pipe.build()
-    train_loader = DALIClassificationIterator(pipe, size=int(pipe.epoch_size("Reader") / args.world_size))
-
-    pipe = HybridValPipe(batch_size=args.batch_size, num_threads=args.workers, device_id=args.local_rank, data_dir=valdir, crop=224, size=256)
-    pipe.build()
-    val_loader = DALIClassificationIterator(pipe, size=int(pipe.epoch_size("Reader") / args.world_size))
-
-else:
-    train_dataset = datasets.ImageFolder(traindir, transforms.Compose([transforms.RandomResizedCrop(224),
-                    transforms.RandomHorizontalFlip(), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ]))
-    val_dataset = datasets.ImageFolder(valdir, transforms.Compose([transforms.Resize(256),
-                    transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ]))
-
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=False)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=False)
-
 if args.evaluate:
     if args.arch == 'mobilenet_v2' and args.pretrained:
-        b_acc = 0.0
+        best_acc = 0.0
         b_epoch = 0
     else:
-        b_acc = checkpoint['best_acc']
+        best_acc = checkpoint['best_acc']
         b_epoch = checkpoint['epoch']
-    print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(b_acc))
+    print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
     if args.distort_w_test:
         orig_m = copy.deepcopy(model.state_dict())
         acc_d = []
@@ -450,9 +450,10 @@ if args.evaluate:
         print('\n\n{}\n{}\n\n\n'.format(vars, acc_d))
         raise(SystemExit)
     else:
-        validate(val_loader, model, epoch=b_epoch, plot_acc=b_acc)
+        validate(val_loader, model, epoch=b_epoch, plot_acc=best_acc)
         raise(SystemExit)
 
+best_acc = 0
 
 for epoch in range(args.start_epoch, args.epochs):
     utils.adjust_learning_rate(optimizer, epoch, args)
@@ -511,10 +512,19 @@ for epoch in range(args.start_epoch, args.epochs):
             print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {} | {:.2f}'.format(
                 str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs)))
 
-        if False and args.calculate_running and i == 0:
-            torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(),
-                         'best_acc': 0.0, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
-            raise(SystemExit)
+        if args.calculate_running and i == 0:
+            print('\n')
+            with torch.no_grad():
+                for m in model.modules():
+                    if isinstance(m, QuantMeasure):
+                        m.calculate_running = False
+                        m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
+                        print('running_list:', m.running_list, 'running_max:', m.running_max)
+                    #print('matched', name, 'setting to mean')
+                    #param = torch.tensor(param, device='cuda:0').mean()
+
+            #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
+            #raise(SystemExit)
 
     acc = validate(val_loader, model, epoch=epoch)
     if acc > best_acc:

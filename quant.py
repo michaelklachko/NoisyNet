@@ -86,8 +86,8 @@ class QuantMeasure(nn.Module):
         self.min_value = min_value
         self.scale = scale
         self.show_running = show_running
-        torch.cuda.synchronize()
         self.calculate_running = calculate_running
+        self.running_list = []
         self.pctl = pctl
         '''
         if True or torch.cuda.current_device() == 1:
@@ -98,32 +98,29 @@ class QuantMeasure(nn.Module):
 
     def forward(self, input):
         #max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
+        with torch.no_grad():
+            if self.calculate_running:
+                pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
+                self.running_max = pctl
+                max_value = self.running_max
+                self.running_list.append(self.running_max)
+                #self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
+                print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.calculate_running, self.running_max.item(), input.max().item() * 0.95, input.max().item()))
+                self.calculate_running = False
+            else:
+                max_value = self.running_max.item()
+                #max_value = input.max()
+                if max_value > 1:
+                    max_value = max_value * self.scale
 
-        if self.calculate_running:
-            torch.cuda.synchronize()
-            pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
-            #max_value = pctl.item()
-            self.running_max = pctl#.item()
-            max_value = self.running_max
-            #self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
-            print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.calculate_running, self.running_max.item(), input.max().item() * 0.95, input.max().item()))
-            torch.cuda.synchronize()
-            self.calculate_running = False
-            torch.cuda.synchronize()
-        else:
-            max_value = self.running_max.item()
-            #max_value = input.max()
-            if max_value > 1:
-                max_value = max_value * self.scale
+            if self.debug:  #list(input.shape) == [input.shape[0], 512] and self.show_running:# and torch.cuda.current_device() == 1:
+                print('{} gpu {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.running_max.item(), input.max().item()*0.5, input.max().item()))
+                #self.show_running = False  #set this in the outer loop using model.module.quantizeX.show_running = False after N iterations.
 
-        if self.debug:  #list(input.shape) == [input.shape[0], 512] and self.show_running:# and torch.cuda.current_device() == 1:
-            print('{} gpu {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.running_max.item(), input.max().item()*0.5, input.max().item()))
-            #self.show_running = False
-
-        if self.training:
-            stoch = self.stochastic
-        else:
-            stoch = 0
+            if self.training:
+                stoch = self.stochastic
+            else:
+                stoch = 0
 
         return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, False, self.debug)
 
