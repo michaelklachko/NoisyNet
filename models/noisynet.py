@@ -1,19 +1,13 @@
 import torch
 from torch import nn
-from torch.optim import lr_scheduler
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from torch.distributions.uniform import Uniform
 
-import random
-import os
-from datetime import datetime
-import argparse
 import numpy as np
-import math
 
 import utils
-from quant_orig import QConv2d, QLinear, QuantMeasure
+from misc_code.quant_orig import QConv2d, QLinear, QuantMeasure
 from plot_histograms import plot_layers
 
 

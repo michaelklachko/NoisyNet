@@ -10,10 +10,9 @@ import os
 from datetime import datetime
 import argparse
 import numpy as np
-import math
 
 import utils
-from quant_orig import QConv2d, QLinear, QuantMeasure
+from misc_code.quant_orig import QConv2d, QLinear, QuantMeasure
 from plot_histograms import plot_layers
 
 torch.backends.cudnn.benchmark = True

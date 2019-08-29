@@ -74,13 +74,14 @@ class QuantMeasure(nn.Module):
     https://github.com/salu133445/bmusegan/blob/master/musegan/utils/ops.py
     '''
 
-    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=True, calculate_running=False, pctl=.999, debug=False):
+    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=True, calculate_running=False, pctl=.999, debug=False, inplace=False):
         super(QuantMeasure, self).__init__()
         self.register_buffer('running_min', torch.zeros(1))
-        self.register_buffer('running_max', torch.zeros(1))
+        self.register_buffer('running_max', torch.zeros([]))
         self.momentum = momentum
         self.num_bits = num_bits
         self.stochastic = stochastic
+        self.inplace = inplace
         self.debug = debug
         self.max_value = max_value
         self.min_value = min_value
@@ -101,12 +102,13 @@ class QuantMeasure(nn.Module):
         with torch.no_grad():
             if self.calculate_running:
                 pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
-                self.running_max = pctl
-                max_value = self.running_max
-                self.running_list.append(self.running_max)
+                #self.running_max = pctl
+                max_value = input.max().item()  #self.running_max
+                self.running_list.append(pctl)  #self.running_max)
                 #self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
-                print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.calculate_running, self.running_max.item(), input.max().item() * 0.95, input.max().item()))
-                self.calculate_running = False
+                if self.debug:
+                    print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
+                #self.calculate_running = False
             else:
                 max_value = self.running_max.item()
                 #max_value = input.max()
@@ -122,7 +124,7 @@ class QuantMeasure(nn.Module):
             else:
                 stoch = 0
 
-        return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, False, self.debug)
+        return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, self.inplace, self.debug)
 
 
 class QuantOp(Function):
