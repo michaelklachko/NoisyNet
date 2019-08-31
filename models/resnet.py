@@ -48,7 +48,7 @@ class BasicBlock(nn.Module):
         out = self.conv1(x)
 
         if args.plot:
-            get_layers(self.arrays, x, self.conv1.weight, out, stride=self.stride, layer='conv', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, x, self.conv1.weight, out, stride=self.stride, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.print_shapes:
             print('\nblock input:', x.shape)
@@ -59,7 +59,7 @@ class BasicBlock(nn.Module):
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
             out += bias
             if args.plot:
-                self.arrays.append([bias.half()])
+                arrays.append([bias.half()])
         else:
             out = self.bn1(out)
 
@@ -72,7 +72,7 @@ class BasicBlock(nn.Module):
         out = self.conv2(out)
 
         if args.plot:
-            get_layers(self.arrays, conv2_input, self.conv2.weight, out, stride=1, layer='conv', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, conv2_input, self.conv2.weight, out, stride=1, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.print_shapes:
             print('conv2:', out.shape)
@@ -82,7 +82,7 @@ class BasicBlock(nn.Module):
                    self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
             out += bias
             if args.plot:
-                self.arrays.append([bias.half()])
+                arrays.append([bias.half()])
         else:
             out = self.bn2(out)
 
@@ -109,7 +109,8 @@ class ResNet(nn.Module):
 
     def __init__(self, block, num_classes=1000):
         self.inplanes = 64
-        self.arrays = []
+        global arrays  #for plotting
+        arrays = []
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
@@ -162,14 +163,14 @@ class ResNet(nn.Module):
             print('first conv:', x.shape)
 
         if args.plot:
-            get_layers(self.arrays, conv1_input, self.conv1.weight, x, stride=2, padding=3, layer='conv', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, conv1_input, self.conv1.weight, x, stride=2, padding=3, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.merge_bn:
             bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
             x += bias
             if args.plot:
-                self.arrays.append([bias.half()])
+                arrays.append([bias.half()])
         else:
             x = self.bn1(x)
 
@@ -203,10 +204,10 @@ class ResNet(nn.Module):
         x = self.fc(x)
 
         if args.plot:
-            get_layers(self.arrays, fc_input, self.fc.weight, x, layer='linear', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, fc_input, self.fc.weight, x, layer='linear', basic=args.plot_basic, debug=args.debug)
 
         if args.merge_bn and args.plot:
-            self.arrays.append([self.fc.bias.half()])
+            arrays.append([self.fc.bias.half()])
 
         if args.print_shapes:
             print('\noutput:', x.shape)
@@ -223,13 +224,13 @@ class ResNet(nn.Module):
             print('\n\nPreparing arrays for plotting:\n')
             layers = []
             layer = []
-            print('\n\nlen(arrays) // len(names):', len(self.arrays), len(names), len(self.arrays) // len(names), '\n\n')
-            num_layers = len(self.arrays) // len(names)
+            print('\n\nlen(arrays) // len(names):', len(arrays), len(names), len(arrays) // len(names), '\n\n')
+            num_layers = len(arrays) // len(names)
             for k in range(num_layers):
                 print('layer', k, names)
                 for j in range(len(names)):
                     #print('\t', names[j])
-                    layer.append([self.arrays[len(names)*k+j][0].detach().cpu().numpy()])
+                    layer.append([arrays[len(names)*k+j][0].detach().cpu().numpy()])
                 layers.append(layer)
                 layer = []
 

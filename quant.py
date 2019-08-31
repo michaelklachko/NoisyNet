@@ -74,7 +74,7 @@ class QuantMeasure(nn.Module):
     https://github.com/salu133445/bmusegan/blob/master/musegan/utils/ops.py
     '''
 
-    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, show_running=True, calculate_running=False, pctl=.999, debug=False, inplace=False):
+    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, calculate_running=False, pctl=.999, debug=False, inplace=False):
         super(QuantMeasure, self).__init__()
         self.register_buffer('running_min', torch.zeros(1))
         self.register_buffer('running_max', torch.zeros([]))
@@ -86,38 +86,34 @@ class QuantMeasure(nn.Module):
         self.max_value = max_value
         self.min_value = min_value
         self.scale = scale
-        self.show_running = show_running
         self.calculate_running = calculate_running
         self.running_list = []
         self.pctl = pctl
-        '''
-        if True or torch.cuda.current_device() == 1:
-            self.show_running = True
-        else:
-            self.show_running = False
-        '''
 
     def forward(self, input):
         #max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
         with torch.no_grad():
             if self.calculate_running:
-                pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
+                if 224 in list(input.shape):
+                    #print('RGB')
+                    pctl = torch.tensor(0.92)
+                else:
+                    pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
+                #print('input.shape', input.shape, 'pctl.shape', pctl.shape)
                 #self.running_max = pctl
                 max_value = input.max().item()  #self.running_max
                 self.running_list.append(pctl)  #self.running_max)
                 #self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
                 if self.debug:
                     print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
-                #self.calculate_running = False
             else:
                 max_value = self.running_max.item()
                 #max_value = input.max()
-                if max_value > 1:
+                if False and max_value > 1:
                     max_value = max_value * self.scale
 
-            if self.debug:  #list(input.shape) == [input.shape[0], 512] and self.show_running:# and torch.cuda.current_device() == 1:
+            if self.debug:  #list(input.shape) == [input.shape[0], 512] and torch.cuda.current_device() == 1:
                 print('{} gpu {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.running_max.item(), input.max().item()*0.5, input.max().item()))
-                #self.show_running = False  #set this in the outer loop using model.module.quantizeX.show_running = False after N iterations.
 
             if self.training:
                 stoch = self.stochastic

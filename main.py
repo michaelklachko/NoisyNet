@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument('--step-after', default=30, type=int, help='reduce LR after this number of epochs')
     parser.add_argument('--seed', default=None, type=int, help='seed for initializing training. ')
     parser.add_argument('--num_sims', default=1, type=int, help='number of simulations.')
+    parser.add_argument('--var_name', default=None, type=str, help='var name for hyperparam search. ')
     parser.add_argument('--q_a', default=4, type=int, help='number of bits to quantize layer input')
     parser.add_argument('--local_rank', default=0, type=int, help='')
     parser.add_argument('--world_size', default=1, type=int, help='')
@@ -55,7 +56,7 @@ def parse_args():
     parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to avoid dividing by zero')
     parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
-    parser.add_argument('--pctl', default=99.9, type=float, help='percentile to show when plotting')
+    parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
     parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
@@ -114,11 +115,6 @@ def parse_args():
     parser.set_defaults(plot_normalize=False)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
-    feature_parser.add_argument('--param_search', dest='param_search', action='store_true')
-    feature_parser.add_argument('--no-param_search', dest='param_search', action='store_false')
-    parser.set_defaults(param_search=False)
-
-    feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--q_inplace', dest='q_inplace', action='store_true')
     feature_parser.add_argument('--no-q_inplace', dest='q_inplace', action='store_false')
     parser.set_defaults(q_inplace=False)
@@ -132,14 +128,16 @@ def parse_args():
 def load_from_checkpoint(args):
     model, criterion, optimizer = build_model(args)
     if os.path.isfile(args.resume):
-        print("=> loading checkpoint '{}'".format(args.resume))
+        if args.var_name is None:
+            print("=> loading checkpoint '{}'".format(args.resume))
         checkpoint = torch.load(args.resume)
         start_epoch = checkpoint['epoch']
         best_acc = checkpoint['best_acc']
         best_epoch = checkpoint['epoch']
         #model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
-        print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, best_epoch))
+        if args.var_name is None:
+            print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, best_epoch))
         if args.debug:
             utils.print_model(model, args, full=True)
 
@@ -322,8 +320,9 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
             acc = utils.accuracy(output, target)
             te_accs.append(acc)
 
-            if args.calculate_running and i == 4:
-                print('\n')
+            if args.q_a > 0 and args.calculate_running and i == 4:
+                if args.debug:
+                    print('\n')
                 with torch.no_grad():
                     for m in model.modules():
                         if isinstance(m, QuantMeasure):
@@ -333,16 +332,17 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                                 print('running_list:', m.running_list, 'running_max:', m.running_max)
 
         mean_acc = np.mean(te_accs)
-        print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
+        print('{}\tEpoch {:d}  Validation Accuracy: {:.2f}'.format(str(datetime.now())[:-7], epoch, mean_acc))
 
     return mean_acc
 
 
 def build_model(args):
-    if args.pretrained or args.resume:
-        print("\n\n\tLoading pre-trained {}\n\n".format(args.arch))
-    else:
-        print("\n\n\tTraining {}\n\n".format(args.arch))
+    if args.var_name is None:
+        if args.pretrained or args.resume:
+            print("\n\n\tLoading pre-trained {}\n\n".format(args.arch))
+        else:
+            print("\n\n\tTraining {}\n\n".format(args.arch))
 
     if args.arch == 'mobilenet_v2':
         #model = models.mobilenet_v2(pretrained=args.pretrained)
@@ -467,15 +467,21 @@ def main():
 
     train_loader, val_loader = utils.setup_data(args)
 
-    if args.param_search:
+    if args.var_name is not None:
         total_list = []
-        var_list = [99.5, 99.7, 99.8, 99.9, 99.93, 99.95, 99.97, 99.98, 99.99, 99.993, 99.995, 99.997, 99.998, 99.999, 99.9995, 99.9999]
-        for args.pctl in var_list:
-            #for args.q_scale in var_list:
+        if args.var_name == 'pctl':
+            var_list = [99.94, 99.95, 99.96, 99.97, 99.98, 99.99, 99.992, 99.994, 99.996, 99.998, 99.999]
+            var_list = [99.9, 99.92, 99.94, 99.95, 99.96, 99.97, 99.98, 99.99, 99.992, 99.994, 99.996, 99.998, 99.999]
+        if args.var_name == 'q_scale':
+            #var_list = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98]
+            var_list = [0.87, 0.88, 0.89, 0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96]
+
+        for var in var_list:
+            setattr(args, args.var_name, var)
             acc_list = []
-            print('\n\nPCTL', args.pctl)
+            print('\n*******************  {} {}  *********************\n'.format(args.var_name, var))
             for s in range(args.num_sims):
-                print('\nSimulation', s)
+                #print('\nSimulation', s)
                 if args.resume:
                     model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
                     if args.merge_bn:
@@ -488,10 +494,10 @@ def main():
                 if args.dali:
                     val_loader.reset()
                 acc_list.append(acc)
-            total_list.append(np.mean(acc_list))
-        for var, acc in zip(var_list, total_list):
-            print('pctl {} acc {:.2f}'.format(var, acc))
-            #print('q_scale {} acc {:.2f}'.format(var, acc))  #raise(SystemExit)
+            total_list.append((np.mean(acc_list), np.min(acc_list), np.max(acc_list)))
+            print('\n{:d} runs:  {} {} {:.2f} ({:.2f}/{:.2f})'.format(args.num_sims, args.var_name, var, *total_list[-1]))
+        for var, (mean, min, max) in zip(var_list, total_list):
+            print('{} {} acc {:.2f} ({:.2f}/{:.2f})'.format(args.var_name, var, mean, min, max))  #raise(SystemExit)
         #raise (SystemExit)
         return  #might fail with DataParallel
 
