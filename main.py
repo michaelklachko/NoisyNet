@@ -165,7 +165,7 @@ def load_from_checkpoint(args):
                 m = model.state_dict()
                 m.update({saved_name: saved_param})
                 model.load_state_dict(m)
-            elif not matched and args.debug:
+            if not matched and args.debug:
                 print('\t\t\t************ Not copying', saved_name)
         if args.debug:
             print('\n\nCurrent model')
@@ -223,9 +223,6 @@ def distort_weights(val_loader, model, args):
 
             if args.debug:
                 print('restored:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
-
-            if args.dali:
-                val_loader.reset()
 
         avg_te_acc_dist = np.mean(te_acc_dists)
         acc_d.append(avg_te_acc_dist)
@@ -332,7 +329,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                                 print('running_list:', m.running_list, 'running_max:', m.running_max)
 
         mean_acc = np.mean(te_accs)
-        print('{}\tEpoch {:d}  Validation Accuracy: {:.2f}'.format(str(datetime.now())[:-7], epoch, mean_acc))
+        print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
 
     return mean_acc
 
@@ -372,8 +369,7 @@ def build_model(args):
     return model, criterion, optimizer
 
 
-def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
-
+def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, best_epoch, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
         print('lr:', args.lr, 'wd', args.weight_decay)
@@ -454,7 +450,6 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
 
         if args.dali:
             train_loader.reset()
-            val_loader.reset()
 
     print('\n\nBest Accuracy {:.2f}\n\n'.format(best_acc))
 
@@ -471,7 +466,7 @@ def main():
         total_list = []
         if args.var_name == 'pctl':
             var_list = [99.94, 99.95, 99.96, 99.97, 99.98, 99.99, 99.992, 99.994, 99.996, 99.998, 99.999]
-            var_list = [99.9, 99.92, 99.94, 99.95, 99.96, 99.97, 99.98, 99.99, 99.992, 99.994, 99.996, 99.998, 99.999]
+            var_list = [99.99, 99.992, 99.994, 99.996, 99.998, 99.999, 99.9995]
         if args.var_name == 'q_scale':
             #var_list = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98]
             var_list = [0.87, 0.88, 0.89, 0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96]
@@ -491,8 +486,6 @@ def main():
                         m.calculate_running = True
                         m.running_list = []
                 acc = validate(val_loader, model, args, epoch=best_epoch, plot_acc=best_acc)
-                if args.dali:
-                    val_loader.reset()
                 acc_list.append(acc)
             total_list.append((np.mean(acc_list), np.min(acc_list), np.max(acc_list)))
             print('\n{:d} runs:  {} {} {:.2f} ({:.2f}/{:.2f})'.format(args.num_sims, args.var_name, var, *total_list[-1]))
@@ -520,7 +513,7 @@ def main():
         model, criterion, optimizer = build_model(args)
         best_acc, best_epoch, start_epoch = 0, 0, 0
 
-    train(train_loader, val_loader, model, criterion, optimizer, best_acc, best_epoch, args)
+    train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, best_epoch, args)
 
 
 if __name__ == '__main__':

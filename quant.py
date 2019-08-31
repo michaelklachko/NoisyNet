@@ -74,7 +74,8 @@ class QuantMeasure(nn.Module):
     https://github.com/salu133445/bmusegan/blob/master/musegan/utils/ops.py
     '''
 
-    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1, calculate_running=False, pctl=.999, debug=False, inplace=False):
+    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1,
+                 calculate_running=False, pctl=.999, debug=False, debug_quant=False, inplace=False):
         super(QuantMeasure, self).__init__()
         self.register_buffer('running_min', torch.zeros(1))
         self.register_buffer('running_max', torch.zeros([]))
@@ -83,6 +84,7 @@ class QuantMeasure(nn.Module):
         self.stochastic = stochastic
         self.inplace = inplace
         self.debug = debug
+        self.debug_quant = debug_quant
         self.max_value = max_value
         self.min_value = min_value
         self.scale = scale
@@ -112,15 +114,15 @@ class QuantMeasure(nn.Module):
                 if False and max_value > 1:
                     max_value = max_value * self.scale
 
-            if self.debug:  #list(input.shape) == [input.shape[0], 512] and torch.cuda.current_device() == 1:
-                print('{} gpu {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.running_max.item(), input.max().item()*0.5, input.max().item()))
+            if False and self.debug:  #list(input.shape) == [input.shape[0], 512] and torch.cuda.current_device() == 1:
+                print('{} gpu {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.running_max.item(), input.max().item()*0.95, input.max().item()))
 
             if self.training:
                 stoch = self.stochastic
             else:
                 stoch = 0
 
-        return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, self.inplace, self.debug)
+        return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, self.inplace, self.debug_quant)
 
 
 class QuantOp(Function):
