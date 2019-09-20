@@ -10,7 +10,7 @@ import torchvision.datasets as datasets
 def adjust_learning_rate(optimizer, epoch, args):
     lr = args.lr * (0.1 ** (epoch // args.step_after))
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        param_group['lr'] = lr #/ args.batch_size
 
 
 def accuracy(output, target):

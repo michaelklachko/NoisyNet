@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument('--lr', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
+    parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
     parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency (default: 10)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
     parser.add_argument('--tag', default='', type=str, metavar='PATH', help='tag')
@@ -330,7 +331,8 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
 
         mean_acc = np.mean(te_accs)
         print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
-
+        if args.dali:
+            val_loader.reset()
     return mean_acc
 
 
@@ -361,7 +363,6 @@ def build_model(args):
 
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
     if args.fp16:  #loss scaling for SGD with weight decay:
-        #criterion *= 100.0
         args.lr /= 100.0
         args.weight_decay *= 100.0
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
@@ -412,6 +413,29 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 args.print_shapes = False
             acc = utils.accuracy(output, target)
             tr_accs.append(acc)
+            #optimizer.zero_grad()
+            #loss.backward()
+            #loss.backward(retain_graph=True)
+
+            if args.L3 > 0:  #L2 penalty for gradient size
+                #for n, p in model.named_parameters():
+                    #if ('conv' in n or 'fc' in n) and 'weight' in n:
+                        #print(n, list(p.shape))
+                #raise(SystemExit)
+                params = [p for n, p in model.named_parameters() if ('conv' in n or 'fc' in n) and 'weight' in n]
+                #params = [model.conv1.weight, model.conv2.weight, model.linear1.weight, model.linear2.weight]
+                param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=True)
+                # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
+                # now compute the 2-norm of the param_grads
+                grad_norm = 0
+                for grad in param_grads:
+                    grad_norm += args.L3 * grad.pow(2).sum()
+                # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
+                #grad_norm.backward(retain_graph=False)  # or like this:
+                loss = loss + grad_norm
+                #optimizer.zero_grad()
+                #loss.backward(retain_graph=True)
+            #else:
             optimizer.zero_grad()
             loss.backward()
 
@@ -512,6 +536,7 @@ def main():
     else:
         model, criterion, optimizer = build_model(args)
         best_acc, best_epoch, start_epoch = 0, 0, 0
+    best_acc, best_epoch = 0, 0
 
     train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, best_epoch, args)
 
