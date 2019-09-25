@@ -310,7 +310,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                 images, target = data
                 if args.fp16:
                     input = input.half()
-                    target = target.half()
+                    #target = target.half()
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i, acc=plot_acc)
             if i == 0:
@@ -356,6 +356,10 @@ def build_model(args):
 
     if args.fp16:
         model = model.half()
+        #keep BN in FP32 because there's no CUDNN ops for it in FP32 (causes slowdown):
+        for layer in model.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.float()
 
     if args.debug:
         utils.print_model(model, args, full=True)
@@ -392,10 +396,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                     input_var = input_var.half()
                     #target_var = target_var.half()
                 output = model(input_var, epoch=epoch, i=i)
-                if args.fp16:
-                    loss = 100.0 * criterion(output, target_var)
-                else:
-                    loss = criterion(output, target_var)
+                loss = criterion(output, target_var)
             else:
                 images, target = data
                 if args.fp16:
@@ -404,10 +405,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 train_loader_len = len(train_loader)
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i)
-                if args.fp16:
-                    loss = 100.0 * criterion(output, target)
-                else:
-                    loss = criterion(output, target)
+                loss = criterion(output, target)
 
             if i == 0:
                 args.print_shapes = False
@@ -437,6 +435,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 #loss.backward(retain_graph=True)
             #else:
             optimizer.zero_grad()
+            if args.fp16:
+                loss *= 100.0
             loss.backward()
 
             if args.grad_clip > 0:
