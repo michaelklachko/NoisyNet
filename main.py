@@ -20,7 +20,6 @@ import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 from models.resnet import ResNet18
 from models.mobilenet import mobilenet_v2
-from apex import amp
 
 import utils
 from quant import QuantMeasure
@@ -376,6 +375,7 @@ def build_model(args):
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
     if args.fp16:  #loss scaling for SGD with weight decay:
         if args.amp:
+            from apex import amp
             optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
             #model, optimizer = amp.initialize(model, optimizer, opt_level=args.opt_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32, loss_scale=args.loss_scale)
             model, optimizer = amp.initialize(model, optimizer, opt_level='O3', keep_batchnorm_fp32=False)
