@@ -20,6 +20,7 @@ import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 from models.resnet import ResNet18
 from models.mobilenet import mobilenet_v2
+from apex import amp
 
 import utils
 from quant import QuantMeasure
@@ -59,6 +60,7 @@ def parse_args():
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
     parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
     parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
+    parser.add_argument('--loss_scale', default=128.0, type=float, help='when using FP16 precision, scale loss by this value')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -74,6 +76,11 @@ def parse_args():
     feature_parser.add_argument('--dali', dest='dali', action='store_true')
     feature_parser.add_argument('--no-dali', dest='dali', action='store_false')
     parser.set_defaults(dali=True)
+
+    feature_parser = parser.add_mutually_exclusive_group(required=False)
+    feature_parser.add_argument('--amp', dest='amp', action='store_true')
+    feature_parser.add_argument('--no-amp', dest='amp', action='store_false')
+    parser.set_defaults(amp=False)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--dali_cpu', dest='dali_cpu', action='store_true')
@@ -352,8 +359,7 @@ def build_model(args):
         if args.pretrained:
             model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
-    model = torch.nn.DataParallel(model).cuda()
-
+    model = model.cuda()
     if args.fp16:
         model = model.half()
         #keep BN in FP32 because there's no CUDNN ops for it in FP32 (causes slowdown):
@@ -364,17 +370,29 @@ def build_model(args):
     if args.debug:
         utils.print_model(model, args, full=True)
         args.print_shapes = True
+    else:
+        utils.print_model(model, args, full=False)
 
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
     if args.fp16:  #loss scaling for SGD with weight decay:
-        args.lr /= 100.0
-        args.weight_decay *= 100.0
-    optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        if args.amp:
+            optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            #model, optimizer = amp.initialize(model, optimizer, opt_level=args.opt_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32, loss_scale=args.loss_scale)
+            model, optimizer = amp.initialize(model, optimizer, opt_level='O3', keep_batchnorm_fp32=False)
+        else:
+            args.lr /= args.loss_scale
+            args.weight_decay *= args.loss_scale
+            optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+
+    if torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
 
     return model, criterion, optimizer
 
 
-def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, best_epoch, args):
+def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
         print('lr:', args.lr, 'wd', args.weight_decay)
@@ -392,16 +410,14 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 train_loader_len = int(train_loader._size / args.batch_size)
                 input_var = Variable(input)
                 target_var = Variable(target)
-                if args.fp16:
-                    input_var = input_var.half()
-                    #target_var = target_var.half()
+                if args.fp16 and not args.amp:
+                        input_var = input_var.half()
                 output = model(input_var, epoch=epoch, i=i)
                 loss = criterion(output, target_var)
             else:
                 images, target = data
-                if args.fp16:
+                if args.fp16 and not args.amp:
                     images = images.half()
-                    target = target.half()
                 train_loader_len = len(train_loader)
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i)
@@ -436,8 +452,14 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             #else:
             optimizer.zero_grad()
             if args.fp16:
-                loss *= 100.0
-            loss.backward()
+                if args.amp:
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    loss *= args.loss_scale
+                    loss.backward()
+            else:
+                loss.backward()
 
             if args.grad_clip > 0:
                 for n, p in model.named_parameters():
@@ -538,7 +560,7 @@ def main():
         best_acc, best_epoch, start_epoch = 0, 0, 0
     best_acc, best_epoch = 0, 0
 
-    train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, best_epoch, args)
+    train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args)
 
 
 if __name__ == '__main__':
