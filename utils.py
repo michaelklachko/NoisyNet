@@ -45,13 +45,15 @@ def setup_data(args):
                 # without additional reallocations
                 device_memory_padding = 211025920 if decoder_device == 'mixed' else 0
                 host_memory_padding = 140544512 if decoder_device == 'mixed' else 0
-                self.decode = ops.ImageDecoderRandomCrop(device=decoder_device, output_type=types.RGB, device_memory_padding=device_memory_padding, host_memory_padding=host_memory_padding, random_aspect_ratio=[0.8, 1.25], random_area=[0.1, 1.0], num_attempts=100)
+                self.decode = ops.ImageDecoderRandomCrop(device=decoder_device, output_type=types.RGB, device_memory_padding=device_memory_padding,
+                                    host_memory_padding=host_memory_padding, random_aspect_ratio=[0.8, 1.25], random_area=[0.1, 1.0], num_attempts=100)
                 self.res = ops.Resize(device=dali_device, resize_x=crop, resize_y=crop, interp_type=types.INTERP_TRIANGULAR)
                 #self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
                 #image_type=types.RGB, mean=[0.485 * 255, 0.456 * 255, 0.406 * 255], std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
-                self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop), image_type=types.RGB, mean=[0, 0, 0], std=[255, 255, 255])
+                self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
+                                                    image_type=types.RGB, mean=[0, 0, 0], std=[255, 255, 255])
                 self.coin = ops.CoinFlip(probability=0.5)
-                print('DALI "{0}" variant'.format(dali_device))
+                print('DALI "{}" variant, shard id {:d} ({:d} shards)'.format(dali_device, args.local_rank, args.world_size))
 
             def define_graph(self):
                 rng = self.coin()
@@ -69,7 +71,8 @@ def setup_data(args):
                 self.res = ops.Resize(device="gpu", resize_shorter=size, interp_type=types.INTERP_TRIANGULAR)
                 #self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
                 #image_type=types.RGB, mean=[0.485 * 255, 0.456 * 255, 0.406 * 255], std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
-                self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop), image_type=types.RGB, mean=[0, 0, 0], std=[255, 255, 255])
+                self.cmnp = ops.CropMirrorNormalize(device="gpu", output_dtype=types.FLOAT, output_layout=types.NCHW, crop=(crop, crop),
+                                                    image_type=types.RGB, mean=[0, 0, 0], std=[255, 255, 255])
 
             def define_graph(self):
                 self.jpegs, self.labels = self.input(name="Reader")
@@ -106,7 +109,7 @@ def load_cifar(args):
     else:
         print('\n\nLoading entire cifar dataset into RAM')
 
-    if args.precision == 'half':
+    if args.fp16:
         dtype = np.float16
     else:
         dtype = np.float32
@@ -139,6 +142,10 @@ def load_cifar(args):
         print('Applying random Crop and Flip augmentations\n\n')
     else:
         print('Not augmenting dataset\n\n')
+
+    if args.fp16:
+        train_inputs = train_inputs.half()
+        test_inputs = test_inputs.half()
 
     return train_inputs, train_labels, test_inputs, test_labels
 

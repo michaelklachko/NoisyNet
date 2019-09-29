@@ -22,7 +22,6 @@ parser = argparse.ArgumentParser(description='Your project title goes here')
 
 #parser.add_argument('--dataset', type=str, default='cifar_RGB_4bit.npz', metavar='', help='name of dataset')
 parser.add_argument('--dataset', type=str, default='cifar_RGB.npz', metavar='', help='name of dataset')
-parser.add_argument('--precision', type=str, default='full', metavar='', help='float precision: half (16 bits) or full (32 bits)')
 parser.add_argument('--resume', type=str, default=None, metavar='', help='full path of models to resume training')
 parser.add_argument('--tag', type=str, default='', metavar='', help='string to prepend to args.checkpoint_dir')
 
@@ -35,6 +34,16 @@ feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--use_bias', dest='use_bias', action='store_true')
 feature_parser.add_argument('--no-use_bias', dest='use_bias', action='store_false')
 parser.set_defaults(use_bias=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--fp16', dest='fp16', action='store_true')
+feature_parser.add_argument('--no-fp16', dest='fp16', action='store_false')
+parser.set_defaults(fp16=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--keep_bn_fp32', dest='keep_bn_fp32', action='store_true')
+feature_parser.add_argument('--no-keep_bn_fp32', dest='keep_bn_fp32', action='store_false')
+parser.set_defaults(keep_bn_fp32=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--augment', dest='augment', action='store_true')
@@ -246,11 +255,13 @@ parser.add_argument('--uniform_ind', type=float, default=0.0, metavar='', help='
 parser.add_argument('--uniform_dep', type=float, default=0.0, metavar='', help='multiply act x by random uniform in [x/a, ax] range, where a is this value')
 parser.add_argument('--normal_ind', type=float, default=0.0, metavar='', help='add random normal with 0 mean and variance = a to each act x where a is this value')
 parser.add_argument('--normal_dep', type=float, default=0.0, metavar='', help='add random normal with 0 mean and variance = ax to each act x where a is this value')
-
+parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
 
 args = parser.parse_args()
 random.seed(args.seed)
 torch.manual_seed(args.seed)
+if args.gpu is not None:
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 
 class Net(nn.Module):
@@ -1211,6 +1222,13 @@ for current in current_vars:
                 model = Net(args=args)
                 model.p1 = model.p2 = model.p3 = model.p4 = 0
                 utils.init_model(model, args, s)
+                model = model.cuda() #do this before constructing optimizer!!
+                if args.fp16:
+                    model = model.half()
+                    if args.keep_bn_fp32:
+                        for layer in model.modules():
+                            if isinstance(layer, nn.BatchNorm2d) or isinstance(layer, nn.BatchNorm1d):
+                                layer.float()
 
                 if args.train_w_max:
                     print('\n\nSetting w_min1 to {:.2f} and w_max1 to {:.2f}\n\n'.format(model.w_min1.item(), model.w_max1.item()))
@@ -1245,6 +1263,13 @@ for current in current_vars:
                 args.checkpoint_dir = '/'.join(args.resume.split('/')[:-1]) + '/'
                 model = Net(args=args)
                 model = model.cuda()
+
+                if args.fp16:
+                    model = model.half()
+                    if args.keep_bn_fp32:
+                        for layer in model.modules():
+                            if isinstance(layer, nn.BatchNorm2d) or isinstance(layer, nn.BatchNorm1d):
+                                layer.float()
 
                 saved_model = torch.load(args.resume)  #ignore unnecessary parameters
 
@@ -1332,8 +1357,6 @@ for current in current_vars:
                     te_acc = np.mean(te_accs)
                     print('\n\nRestored Model Accuracy after weights distortion {:.2f}\n\n'.format(te_acc))
                 raise (SystemExit)
-
-            model = model.cuda()  #do this before constructing optimizer!!
 
             if s == 0:
                 utils.print_model(model, args)
@@ -1432,6 +1455,7 @@ for current in current_vars:
 
                 if args.LR_scheduler != 'triangle':
                     scheduler.step()
+                    lr = scheduler.get_lr()[0]
 
                 rnd_idx = np.random.permutation(len(train_inputs))
                 train_inputs = train_inputs[rnd_idx]

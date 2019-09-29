@@ -197,15 +197,17 @@ def load_from_checkpoint(args):
 def distort_weights(model, args, s=0):
     with torch.no_grad():
         for n, p in model.named_parameters():
+            #print('\n\n{}\n{}\n'.format(n, p.shape))
             if ('conv' in n or 'fc' in n or 'classifier' in n) and 'weight' in n:
-                if False:
-                    print(n)
+                if args.debug and n == 'module.conv1.weight':
+                    print('\n\n\nBefore: {} {}\n{}'.format(n, p.shape, p[0,0]))
                 p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
                 if args.debug and n == 'module.conv1.weight':
                     print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0, 0]))
                 p.data.mul_(p_noise)
+                print('\nAfter:  {} {}\n{}'.format(n, p.shape, p[0, 0]))
             elif 'bn' in n:
-                pass  #print('\n\n{}\n{}\n'.format(n, p))
+                pass
 
 
 def test_weights_distortion(val_loader, model, args):
@@ -319,6 +321,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                 images, target = data
                 if args.fp16 and not args.amp:
                     input = input.half()
+                images = images.cuda(non_blocking=True)
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i, acc=plot_acc)
             if i == 0:
@@ -441,6 +444,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 if args.fp16 and not args.amp:
                     images = images.half()
                 train_loader_len = len(train_loader)
+                images = images.cuda(non_blocking=True)
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i)
                 loss = criterion(output, target)
@@ -502,7 +506,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
 
             if args.L3_old > 0:  #L2 penalty for gradient size
                 params = [p for n, p in model.named_parameters() if ('conv' in n or 'fc' in n) and 'weight' in n]
-                param_grads = torch.autograd.grad(loss, params, create_graph=True)
+                #TODO only_inputs should be True here, but the optimal L2_old param should be adjusted:
+                param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=False)
                 # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
                 # now compute the 2-norm of the param_grads
                 grad_norm = 0
@@ -535,7 +540,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             if args.distort_w_train:
                 distort_weights(model, args)
 
-                #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
+                #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0,
+                # 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
                 #raise(SystemExit)
 
         acc = validate(val_loader, model, args, epoch=epoch)
@@ -545,7 +551,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 tag = args.tag + 'noise_{:.2f}_'.format(args.noise)
             else:
                 tag = args.tag
-            torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc, 'optimizer': optimizer.state_dict()}, tag + '.pth')
+            torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc,
+                        'optimizer': optimizer.state_dict()}, tag + '.pth')
 
         if args.dali:
             train_loader.reset()
