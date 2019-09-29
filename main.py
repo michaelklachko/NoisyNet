@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
     parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
+    parser.add_argument('--L3_old', type=float, default=0.000, metavar='', help='L2 for param grads (original version)')
     parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency (default: 10)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
     parser.add_argument('--tag', default='', type=str, metavar='PATH', help='tag')
@@ -480,18 +481,34 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 #optimizer.zero_grad()
                 #loss.backward(retain_graph=True)
             #else:
+
             optimizer.zero_grad()
             if args.fp16:
                 loss *= args.loss_scale
                 #print('\nscaled_loss:', loss.item(), '\n\n')
                 if False and i == 10:
-                    raise(SystemExit)
+                    raise (SystemExit)
                 loss.backward()
             elif args.amp:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
             else:
-                loss.backward()
+                if args.L3_old > 0:
+                    retain_graph = True
+                else:
+                    retain_graph = False
+                loss.backward(retain_graph=retain_graph)
+
+            if args.L3_old > 0:  #L2 penalty for gradient size
+                params = [p for n, p in model.named_parameters() if ('conv' in n or 'fc' in n) and 'weight' in n]
+                param_grads = torch.autograd.grad(loss, params, create_graph=True)
+                # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
+                # now compute the 2-norm of the param_grads
+                grad_norm = 0
+                for grad in param_grads:
+                    grad_norm += args.L3 * grad.pow(2).sum()
+                # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
+                grad_norm.backward(retain_graph=False)
 
             if args.grad_clip > 0:
                 for n, p in model.named_parameters():
