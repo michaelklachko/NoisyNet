@@ -59,7 +59,9 @@ def parse_args():
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
     parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
     parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
+    parser.add_argument('--amp_level', default='O1', type=str, help='GPU to use, if None use all')
     parser.add_argument('--loss_scale', default=128.0, type=float, help='when using FP16 precision, scale loss by this value')
+    parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -308,15 +310,13 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                 input = data[0]["data"]
                 target = data[0]["label"].squeeze().cuda().long()
                 input_var = Variable(input)
-                if args.fp16:
+                if args.fp16 and not args.amp:
                     input_var = input_var.half()
-                    #target_var = target_var.half()
                 output = model(input_var, epoch=epoch, i=i, acc=plot_acc)
             else:
                 images, target = data
-                if args.fp16:
+                if args.fp16 and not args.amp:
                     input = input.half()
-                    #target = target.half()
                 target = target.cuda(non_blocking=True)
                 output = model(images, epoch=epoch, i=i, acc=plot_acc)
             if i == 0:
@@ -359,12 +359,13 @@ def build_model(args):
             model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
 
     model = model.cuda()
-    if args.fp16:
+    if args.fp16 and not args.amp:
         model = model.half()
-        #keep BN in FP32 because there's no CUDNN ops for it in FP32 (causes slowdown):
-        for layer in model.modules():
-            if isinstance(layer, nn.BatchNorm2d):
-                layer.float()
+        #keep BN in FP32 because there's no CUDNN ops for it in FP32 (causes slowdown) TODO need to verify this!:
+        if args.L3 == 0:   # does not work with L3
+            for layer in model.modules():
+                if isinstance(layer, nn.BatchNorm2d):
+                    layer.float()
 
     if args.debug:
         utils.print_model(model, args, full=True)
@@ -373,21 +374,39 @@ def build_model(args):
         utils.print_model(model, args, full=False)
 
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
-    if args.fp16:  #loss scaling for SGD with weight decay:
-        if args.amp:
-            from apex import amp
-            optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-            #model, optimizer = amp.initialize(model, optimizer, opt_level=args.opt_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32, loss_scale=args.loss_scale)
-            model, optimizer = amp.initialize(model, optimizer, opt_level='O3', keep_batchnorm_fp32=False)
-        else:
-            args.lr /= args.loss_scale
-            args.weight_decay *= args.loss_scale
-            optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+
+    if args.amp and torch.cuda.device_count() > 1:
+        args.gpu = args.local_rank
+        torch.cuda.set_device(args.gpu)
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        args.world_size = torch.distributed.get_world_size()
+
+        assert torch.backends.cudnn.enabled, "Amp requires cudnn backend to be enabled."
+
+    if args.fp16 and not args.amp:  #loss scaling for SGD with weight decay:
+        args.lr /= args.loss_scale
+        args.weight_decay *= args.loss_scale
+        optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    elif args.amp:
+        from apex import amp
+        optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        #model, optimizer = amp.initialize(model, optimizer, opt_level=args.opt_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32, loss_scale=args.loss_scale)
+        model, optimizer = amp.initialize(model, optimizer, opt_level=args.amp_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32)
     else:
         optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
     if torch.cuda.device_count() > 1:
-        model = torch.nn.DataParallel(model)
+        if args.amp:
+            from apex.parallel import DistributedDataParallel as DDP
+            # shared param/delay all reduce turns off bucketing in DDP, for lower latency runs this can improve perf
+            # for the older version of APEX please use shared_param, for newer one it is delay_allreduce
+
+            #By default, apex.parallel.DistributedDataParallel overlaps communication with
+            # computation in the backward pass.
+            # delay_allreduce delays all communication to the end of the backward pass.
+            model = DDP(model, delay_allreduce=True)
+        else:
+            model = torch.nn.DataParallel(model)
 
     return model, criterion, optimizer
 
@@ -413,6 +432,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 if args.fp16 and not args.amp:
                         input_var = input_var.half()
                 output = model(input_var, epoch=epoch, i=i)
+                #print('\n\n\noutput', output)
                 loss = criterion(output, target_var)
             else:
                 images, target = data
@@ -430,7 +450,15 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             #optimizer.zero_grad()
             #loss.backward()
             #loss.backward(retain_graph=True)
-
+            '''
+            print('\n\n\nIteration', i)
+            for n, p in model.named_parameters():
+                if 'bn' in n:
+                    if p.grad is not None:
+                        print('\n\n{}\nvalue\n{}\ngradient\n{}\n'.format(n, p[:4], p.grad[:4]))
+                    else:
+                        print('\n\n{}\nvalue\n{}\ngradient\n{}\n'.format(n, p[:4], p.grad))
+            '''
             if args.L3 > 0:  #L2 penalty for gradient size
                 #for n, p in model.named_parameters():
                     #if ('conv' in n or 'fc' in n) and 'weight' in n:
@@ -443,21 +471,25 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 # now compute the 2-norm of the param_grads
                 grad_norm = 0
                 for grad in param_grads:
-                    grad_norm += args.L3 * grad.pow(2).sum()
+                    #print('param_grad {}:\n{}\ngrad.pow(2).mean(): {:.4f}'.format(grad.shape, grad[0,0], grad.pow(2).mean().item()))
+                    grad_norm += args.L3 * grad.pow(2).mean()
                 # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
                 #grad_norm.backward(retain_graph=False)  # or like this:
+                #print('loss {:.4f} grad_norm {:.4f}'.format(loss.item(), grad_norm.item()))
                 loss = loss + grad_norm
                 #optimizer.zero_grad()
                 #loss.backward(retain_graph=True)
             #else:
             optimizer.zero_grad()
             if args.fp16:
-                if args.amp:
-                    with amp.scale_loss(loss, optimizer) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    loss *= args.loss_scale
-                    loss.backward()
+                loss *= args.loss_scale
+                #print('\nscaled_loss:', loss.item(), '\n\n')
+                if False and i == 10:
+                    raise(SystemExit)
+                loss.backward()
+            elif args.amp:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
             else:
                 loss.backward()
 
