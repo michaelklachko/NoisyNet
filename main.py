@@ -194,8 +194,21 @@ def load_from_checkpoint(args):
 
     return model, criterion, optimizer, best_acc, best_epoch, start_epoch
 
+def distort_weights(model, args, s=0):
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if ('conv' in n or 'fc' in n or 'classifier' in n) and 'weight' in n:
+                if False:
+                    print(n)
+                p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
+                if args.debug and n == 'module.conv1.weight':
+                    print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0, 0]))
+                p.data.mul_(p_noise)
+            elif 'bn' in n:
+                pass  #print('\n\n{}\n{}\n'.format(n, p))
 
-def distort_weights(val_loader, model, args):
+
+def test_weights_distortion(val_loader, model, args):
     orig_m = copy.deepcopy(model.state_dict())
     acc_d = []
     vars = [0.0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
@@ -208,21 +221,9 @@ def distort_weights(val_loader, model, args):
 
         for s in range(args.num_sims):
             te_accuracies_dist = []
-            with torch.no_grad():
-                for n, p in model.named_parameters():
-                    if ('conv' in n or 'fc' in n or 'classifier' in n) and 'weight' in n:
-                        if False and s == 0 and args.noise == vars[0]:
-                            print(n)
-                        p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
-                        if args.debug and n == 'module.conv1.weight':
-                            print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0, 0]))
-                        p.data.mul_(p_noise)
-                    elif 'bn' in n:
-                        pass  #print('\n\n{}\n{}\n'.format(n, p))
-
+            distort_weights(model, args, s=s)
             te_acc_d = validate(val_loader, model, args)
             te_accuracies_dist.append(te_acc_d.item())
-
             te_acc_dist = np.mean(te_accuracies_dist)
             te_acc_dists.append(te_acc_dist)
 
@@ -531,6 +532,9 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                             m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
                             print('running_list:', m.running_list, 'running_max:', m.running_max)
 
+            if args.distort_w_train:
+                distort_weights(model, args)
+
                 #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0, 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
                 #raise(SystemExit)
 
@@ -596,7 +600,7 @@ def main():
             merge_batchnorm(model, args)
 
         if args.distort_w_test:
-            distort_weights(val_loader, model, args)
+            test_weights_distortion(val_loader, model, args)
             raise(SystemExit)
 
         print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
