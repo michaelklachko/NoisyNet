@@ -205,7 +205,7 @@ parser.add_argument('--LR_1', type=float, default=0.0, metavar='', help='learnin
 parser.add_argument('--LR_2', type=float, default=0.0, metavar='', help='learning rate for learning second layer weights')
 parser.add_argument('--LR_3', type=float, default=0.0, metavar='', help='learning rate for learning third layer weights')
 parser.add_argument('--LR_4', type=float, default=0.0, metavar='', help='learning rate for learning fourth layer weights')
-parser.add_argument('--LR', type=float, default=0.0006, metavar='', help='learning rate')
+parser.add_argument('--LR', type=float, default=0.001, metavar='', help='learning rate')
 parser.add_argument('--LR_decay', type=float, default=0.95, metavar='', help='learning rate decay')
 parser.add_argument('--LR_step_after', type=int, default=100, metavar='', help='multiply learning rate by LR_step after this number of epochs')
 parser.add_argument('--LR_max_epoch', type=int, default=10, metavar='', help='for triangle LR schedule (super-convergence) this is the epoch with max LR')
@@ -213,7 +213,7 @@ parser.add_argument('--LR_finetune_epochs', type=int, default=20, metavar='', he
 parser.add_argument('--LR_step', type=float, default=0.1, metavar='', help='reduce learning rate by this number after LR_step_after number of epochs')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='', help='momentum')
 parser.add_argument('--optim', type=str, default='Adam', metavar='', help='optimizer type')
-parser.add_argument('--LR_scheduler', type=str, default='step', metavar='', help='LR scheduler type')
+parser.add_argument('--LR_scheduler', type=str, default='manual', metavar='', help='LR scheduler type')
 parser.add_argument('--L1_1', type=float, default=0.0, metavar='', help='Negative L1 penalty (conv1 layer)')
 parser.add_argument('--L1_2', type=float, default=0.0, metavar='', help='Negative L1 penalty (conv2 layer)')
 parser.add_argument('--L1_3', type=float, default=0.0, metavar='', help='Negative L1 penalty (linear1 layer)')
@@ -879,7 +879,7 @@ class Net(nn.Module):
                 linear2_weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
                 #raise (SystemExit)
 
-        if args.merge_bn:
+        if args.bn4 and args.merge_bn:
             if self.training:
                 print('\n\n************ Merging BatchNorm during training! **********\n\n')
             self.bias4 = self.bn4.bias.view(1, -1) - self.bn4.running_mean.data.view(1, -1) * self.bn4.weight.data.view(1, -1) / torch.sqrt(self.bn4.running_var.data.view(1, -1) + 0.0000001)
@@ -1166,10 +1166,12 @@ for current in current_vars:
         if args.dropout > 0 and args.var_name != 'dropout':
             #pass
             #args.dropout = 0.1 * args.width
+            '''
             if args.q_a2 == 0:
                 args.dropout = args.width * 4 / 40.
             else:
                 args.dropout = args.width * args.q_a2 / 40.
+            '''
             print('\n\nSetting dropout in fc layers to {}\n\n'.format(args.dropout))
 
 
@@ -1404,9 +1406,14 @@ for current in current_vars:
                 lr = scheduler.get_lr()[0]
             elif args.LR_scheduler == 'triangle':
                 lr_increment = args.LR / ((args.LR_max_epoch + 1) * num_train_batches)
+                mom_decrement = args.momentum / ((args.LR_max_epoch + 1) * num_train_batches)
                 lr_decrement = (args.LR - 0.05 * args.LR) / ((args.nepochs - args.LR_max_epoch - args.LR_finetune_epochs) * num_train_batches)
                 lr_decrement2 = (0.05 * args.LR) / (args.LR_finetune_epochs * num_train_batches)
+                mom_increment = (args.LR - 0.05 * args.LR) / (   #TODO!!!
+                                (args.nepochs - args.LR_max_epoch - args.LR_finetune_epochs) * num_train_batches)
+                mom_increment2 = (0.05 * args.LR) / (args.LR_finetune_epochs * num_train_batches)
                 lr = 0
+                mom = args.momentum
 
             prev_best_acc = 15
             scale_add = 0.2  #used to increase strength of L3 regularizers
@@ -1453,7 +1460,11 @@ for current in current_vars:
                 nsr4s = []
                 avg_nsrs = []
 
-                if args.LR_scheduler != 'triangle':
+                if args.LR_scheduler == 'manual':
+                    lr = args.LR * args.LR_step ** (epoch // args.LR_step_after)
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lr #/ args.batch_size
+                elif args.LR_scheduler != 'triangle':
                     scheduler.step()
                     lr = scheduler.get_lr()[0]
 
@@ -1494,13 +1505,17 @@ for current in current_vars:
                     if args.LR_scheduler == 'triangle':
                         if epoch <= args.LR_max_epoch:
                             lr +=  lr_increment
+                            mom -= mom_decrement
                         elif epoch <= args.nepochs - args.LR_finetune_epochs:
                             lr -= lr_decrement
+                            mom += mom_increment
                         else:
                             lr -= lr_decrement2
+                            mom += mom_increment2
 
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = lr / args.batch_size
+                            param_group['momentum'] = mom
 
                     if args.L2_act1 > 0:  #does not help
                         loss += args.L2_act1 * (model.conv1_).pow(2).sum()
@@ -1591,7 +1606,7 @@ for current in current_vars:
 
                     if args.L3 > 0:   #L2 penalty for gradient size
                         params = [model.conv1.weight, model.conv2.weight, model.linear1.weight, model.linear2.weight]
-                        param_grads = torch.autograd.grad(loss, params, create_graph=True)
+                        param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=True)
                         # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
                         # now compute the 2-norm of the param_grads
                         grad_sum = 0

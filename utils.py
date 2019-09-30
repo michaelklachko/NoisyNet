@@ -161,7 +161,7 @@ def saveargs(args):
 def init_params(net):
     for m in net.modules():
         if isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal(m.weight, mode='fan_out')
+            nn.init.kaiming_normal_(m.weight, mode='fan_out')
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.BatchNorm2d):
@@ -175,7 +175,6 @@ def init_params(net):
 
 
 def weights_init(m):
-
     if isinstance(m, nn.Conv2d):
         n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
         m.weight.data.normal_(0, math.sqrt(2. / n))
@@ -190,10 +189,38 @@ def weights_init(m):
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
+'''
+#OLD init functions (from pnn):
+def init_params(net):
+    for m in net.modules():
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal(m.weight, mode='fan_out')
+            if m.bias:
+                nn.init.constant(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.constant(m.weight, 1)
+            nn.init.constant(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.normal(m.weight, std=1e-3)
+            if m.bias:
+                nn.init.constant(m.bias, 0)
+
+def weights_init(m):
+    if isinstance(m, nn.Conv2d):
+        n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+        m.weight.data.normal_(0, math.sqrt(2. / n))
+    elif isinstance(m, nn.BatchNorm2d):
+        m.weight.data.fill_(1)
+        m.bias.data.zero_()
+'''
+
 
 def init_model(model, args, s=0):
 
     model.apply(weights_init)
+    #model.apply(init_params)
+    #print('\n\nUsing old Init method (fan out)\n\n')
+    #return
 
     for n, p in model.named_parameters():
         if 'weight' in n and 'conv' in n:
@@ -226,7 +253,7 @@ def init_model(model, args, s=0):
                     print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_conv))
                 p.data = p.data * args.weight_init_scale_conv
 
-        elif 'linear' in n and 'weght' in n:
+        elif 'linear' in n and 'weight' in n:
             print('\n\nInitializing {} to kaiming normal, scale param {}\n\n'.format(n, args.weight_init_scale_fc))
             nn.init.kaiming_normal_(p, mode='fan_in', nonlinearity='relu')
             if s == 0:
