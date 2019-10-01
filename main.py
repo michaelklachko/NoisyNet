@@ -207,7 +207,8 @@ def distort_weights(model, args, s=0):
                     print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0, 0]))
                 #p.data.mul_(p_noise)
                 p.data.add_(p_noise)
-                print('\nAfter:  {} {}\n{}'.format(n, p.shape, p[0, 0]))
+                if args.debug and n == 'module.conv1.weight':
+                    print('\nAfter:  {} {}\n{}'.format(n, p.shape, p[0, 0]))
             elif 'bn' in n:
                 pass
 
