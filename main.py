@@ -203,8 +203,10 @@ def distort_weights(model, args, s=0):
                 if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
                     print('\n\n\nBefore: {} {}\n{}'.format(n, p.shape, p.detach().cpu().numpy()[0,0]))
                 #p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
+                #p_noise = torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
                 p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
                 if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
+                    #print('\nnoise magnitude', args.noise, '\n')
                     print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0]))
                 #p.data.mul_(p_noise)
                 p.data.add_(p_noise)
