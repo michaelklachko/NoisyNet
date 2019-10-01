@@ -421,7 +421,7 @@ def build_model(args):
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
-        print('lr', args.lr, 'wd', args.weight_decay, 'L3', max(args.L3, args.L3_old), 'dropout', args.dropout)
+        print('lr', args.lr, 'wd', args.weight_decay, 'L3', max(args.L3, args.L3_old))
         #for param_group in optimizer.param_groups:
             #param_group['lr'] = args.lr
             #param_group['weight_decay'] = args.weight_decay
