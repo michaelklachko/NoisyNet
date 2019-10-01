@@ -201,10 +201,12 @@ def distort_weights(model, args, s=0):
             if ('conv' in n or 'fc' in n or 'classifier' in n) and 'weight' in n:
                 if args.debug and n == 'module.conv1.weight':
                     print('\n\n\nBefore: {} {}\n{}'.format(n, p.shape, p[0,0]))
-                p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
+                #p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
+                p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
                 if args.debug and n == 'module.conv1.weight':
                     print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0, 0]))
-                p.data.mul_(p_noise)
+                #p.data.mul_(p_noise)
+                p.data.add_(p_noise)
                 print('\nAfter:  {} {}\n{}'.format(n, p.shape, p[0, 0]))
             elif 'bn' in n:
                 pass
