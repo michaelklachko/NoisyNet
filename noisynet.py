@@ -91,6 +91,11 @@ feature_parser.add_argument('--no-amsgrad', dest='amsgrad', action='store_false'
 parser.set_defaults(amsgrad=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--debug', dest='debug', action='store_true')
+feature_parser.add_argument('--no-debug', dest='debug', action='store_false')
+parser.set_defaults(debug=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--nesterov', dest='nesterov', action='store_true')
 feature_parser.add_argument('--no-nesterov', dest='nesterov', action='store_false')
 parser.set_defaults(nesterov=True)
@@ -983,7 +988,6 @@ class Net(nn.Module):
             for layer in layers: #de-torch arrays
                 for array in layer:
                     array[0] = array[0].half().detach().cpu().numpy()  #.astype(np.float16)
-                    print(array[0].type)
 
             if args.plot:
                 figsize = (len(names) * 7, 4 * 6)
@@ -994,7 +998,7 @@ class Net(nn.Module):
                 else:
                     var_name = args.var_name
 
-                plot_layers(num_layers=4, models=[args.checkpoint_dir], epoch=epoch, i=i, layers=layers, names=names, var=var_name, vars=[var_], figsize=figsize, acc=acc, tag=args.tag)
+                plot_layers(num_layers=4, models=[args.checkpoint_dir], epoch=epoch, i=i, layers=layers, names=names, var=var_name, vars=[var_], acc=acc, tag=args.tag, normalize=args.normalize)
                 print('\n\nSaved plots to {}\n\n'.format(args.checkpoint_dir))
                 if args.resume is not None:
                     raise(SystemExit)
@@ -1293,10 +1297,55 @@ for current in current_vars:
                 model.eval()
 
                 if args.merge_bn:
-                    model.conv1.weight.data *= model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)  #(64,3,5,5) x (64)
-                    model.conv2.weight.data *= model.bn2.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn2.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
-                    model.linear1.weight.data *= model.bn3.weight.data.view(-1, 1) / torch.sqrt(model.bn3.running_var.data.view(-1, 1) + 0.0000001)
-                    model.linear2.weight.data *= model.bn4.weight.data.view(-1, 1) / torch.sqrt(model.bn4.running_var.data.view(-1, 1) + 0.0000001)
+                    print('\n\nMerging batchnorm into weights:\n')
+                    #scale1 = model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
+                    bn1_weights = model.bn1.weight
+                    bn1_biases = model.bn1.bias
+                    bn1_run_var = model.bn1.running_var
+                    bn1_run_mean = model.bn1.running_mean
+                    bn1_scale = bn1_weights.data.view(-1, 1, 1, 1) / torch.sqrt(bn1_run_var.data.view(-1, 1, 1, 1) + 0.0000001)
+                    print('\nconv1 bn1.weight\n', bn1_weights.detach().cpu().numpy())
+                    print('\nconv1 bn1.bias\n', bn1_biases.detach().cpu().numpy())
+                    print('\nconv1 bn1 run_vars\n', bn1_run_var.detach().cpu().numpy())
+                    print('\nbn1 run_means\n', bn1_run_mean.detach().cpu().numpy())
+                    print('\nconv1 bn1 scale\n', bn1_scale.view(-1).detach().cpu().numpy())
+                    model.conv1.weight.data *= bn1_scale  #(64,3,5,5) x (64)
+
+                    bn2_weights = model.bn2.weight
+                    bn2_biases = model.bn2.bias
+                    bn2_run_var = model.bn2.running_var
+                    bn2_run_mean = model.bn2.running_mean
+                    bn2_scale = bn2_weights.data.view(-1, 1, 1, 1) / torch.sqrt(bn2_run_var.data.view(-1, 1, 1, 1) + 0.0000001)
+                    print('\nconv2 bn2.weight\n', bn2_weights.detach().cpu().numpy())
+                    print('\nconv1 bn2.bias\n', bn2_biases.detach().cpu().numpy())
+                    print('\nconv2 bn2 run_vars\n', bn2_run_var.detach().cpu().numpy())
+                    print('\nbn2 run_means\n', bn2_run_mean.detach().cpu().numpy())
+                    print('\nconv2 bn2 scale\n', bn2_scale.view(-1).detach().cpu().numpy())
+                    model.conv2.weight.data *= bn2_scale
+
+                    bn3_weights = model.bn3.weight
+                    bn3_biases = model.bn3.bias
+                    bn3_run_var = model.bn3.running_var
+                    bn3_run_mean = model.bn3.running_mean
+                    bn3_scale = bn3_weights.data.view(-1, 1) / torch.sqrt(bn3_run_var.data.view(-1, 1) + 0.0000001)
+                    print('\nbn3.weight\n', bn3_weights.detach().cpu().numpy())
+                    print('\nbn3.bias\n', bn3_biases.detach().cpu().numpy())
+                    print('\nbn3 run_vars\n', bn3_run_var.detach().cpu().numpy())
+                    print('\nbn3 run_means\n', bn3_run_mean.detach().cpu().numpy())
+                    print('\nbn3 scale\n', bn3_scale.view(-1).detach().cpu().numpy())
+                    model.linear1.weight.data *= bn3_scale
+
+                    bn4_weights = model.bn4.weight
+                    bn4_biases = model.bn4.bias
+                    bn4_run_var = model.bn4.running_var
+                    bn4_run_mean = model.bn4.running_mean
+                    bn4_scale = bn4_weights.data.view(-1, 1) / torch.sqrt(bn4_run_var.data.view(-1, 1) + 0.0000001)
+                    print('\nbn4.weight\n', bn4_weights.detach().cpu().numpy())
+                    print('\nbn4.bias\n', bn4_biases.detach().cpu().numpy())
+                    print('\nbn4 run_vars\n', bn4_run_var.detach().cpu().numpy())
+                    print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
+                    print('\nbn4 scale\n', bn4_scale.view(-1).detach().cpu().numpy())
+                    model.linear2.weight.data *= bn4_scale
 
                 te_accs = []
 
@@ -1502,6 +1551,49 @@ for current in current_vars:
 
                     output = model(input, epoch, i, s, acc=acc_)
                     loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
+
+
+                    if args.debug:
+                        print('\n\nIteration', i, '\n\n')
+                        bn1_weights = model.bn1.weight
+                        bn1_biases = model.bn1.bias
+                        bn1_run_var = model.bn1.running_var
+                        bn1_run_mean = model.bn1.running_mean
+                        print('\nconv1 bn1.weight\n', bn1_weights.detach().cpu().numpy())
+                        print('\nconv1 bn1.bias\n', bn1_biases.detach().cpu().numpy())
+                        print('\nconv1 bn1 run_vars\n', bn1_run_var.detach().cpu().numpy())
+                        print('\nbn1 run_means\n', bn1_run_mean.detach().cpu().numpy())
+
+                        bn2_weights = model.bn2.weight
+                        bn2_biases = model.bn2.bias
+                        bn2_run_var = model.bn2.running_var
+                        bn2_run_mean = model.bn2.running_mean
+                        print('\nconv2 bn2.weight\n', bn2_weights.detach().cpu().numpy())
+                        print('\nconv1 bn2.bias\n', bn2_biases.detach().cpu().numpy())
+                        print('\nconv2 bn2 run_vars\n', bn2_run_var.detach().cpu().numpy())
+                        print('\nbn2 run_means\n', bn2_run_mean.detach().cpu().numpy())
+
+                        bn3_weights = model.bn3.weight
+                        bn3_biases = model.bn3.bias
+                        bn3_run_var = model.bn3.running_var
+                        bn3_run_mean = model.bn3.running_mean
+                        print('\nbn3.weight\n', bn3_weights.detach().cpu().numpy())
+                        print('\nbn3.bias\n', bn3_biases.detach().cpu().numpy())
+                        print('\nbn3 run_vars\n', bn3_run_var.detach().cpu().numpy())
+                        print('\nbn3 run_means\n', bn3_run_mean.detach().cpu().numpy())
+
+                        bn4_weights = model.bn4.weight
+                        bn4_biases = model.bn4.bias
+                        bn4_run_var = model.bn4.running_var
+                        bn4_run_mean = model.bn4.running_mean
+                        print('\nbn4.weight\n', bn4_weights.detach().cpu().numpy())
+                        print('\nbn4.bias\n', bn4_biases.detach().cpu().numpy())
+                        print('\nbn4 run_vars\n', bn4_run_var.detach().cpu().numpy())
+                        print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
+                        if i != 0:
+                            print('\nbn4.weight gradients\n', bn4_weights.grad.detach().cpu().numpy())
+
+
 
                     if args.LR_scheduler == 'triangle':
                         if epoch <= args.LR_max_epoch:

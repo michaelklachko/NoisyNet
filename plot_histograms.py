@@ -287,10 +287,8 @@ if __name__ == "__main__":
 		names.extend(['sigmas', 'noise', 'noise/range'])
 	print('\n\nPlotting histograms for {}\n'.format(names))
 	#names = ['input', 'weights', 'out', 'pos/neg', 'after bn']
-	#figsize = (len(names) * 8, 4 * 4.5)
-	figsize = (len(names) * 7, 4 * 6)
 	var = 'L2'
 	vars = [0.0005, 0.0]
 
 	tag = 'test_tag'
-	plot_layers(num_layers=4, models=models, epoch=0, i=0, names=names, var=var, vars=vars, figsize=figsize, tag=tag)
+	plot_layers(num_layers=4, models=models, epoch=0, i=0, names=names, var=var, vars=vars, tag=tag)

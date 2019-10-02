@@ -218,7 +218,7 @@ class MobileNetV2(nn.Module):
             var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
             var_name = ''
             best_acc = 64.2
-            plot_layers(num_layers=len(layers), models=['plotts/'], epoch=68, i=0, layers=layers,
+            plot_layers(num_layers=len(layers), models=['plots/'], epoch=68, i=0, layers=layers,
                         names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=best_acc, tag=args.tag)
             print('\n\nSaved plots to current dir\n\n')
             raise (SystemExit)

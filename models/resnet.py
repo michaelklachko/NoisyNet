@@ -238,8 +238,8 @@ class ResNet(nn.Module):
             var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
             var_name = ''
 
-            plot_layers(num_layers=len(layers), models=['plotts/'], epoch=epoch, i=i, layers=layers,
-                        names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.plot_normalize)
+            plot_layers(num_layers=len(layers), models=['plots/'], epoch=epoch, i=i, layers=layers,
+                        names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.normalize)
             print('\n\nSaved plots to current dir\n\n')
             raise (SystemExit)
 

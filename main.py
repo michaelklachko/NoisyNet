@@ -75,6 +75,11 @@ def parse_args():
     parser.set_defaults(debug_quant=False)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
+    feature_parser.add_argument('--normalize', dest='normalize', action='store_true')
+    feature_parser.add_argument('--no-normalize', dest='normalize', action='store_false')
+    parser.set_defaults(normalize=False)
+
+    feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--dali', dest='dali', action='store_true')
     feature_parser.add_argument('--no-dali', dest='dali', action='store_false')
     parser.set_defaults(dali=True)
@@ -118,11 +123,6 @@ def parse_args():
     feature_parser.add_argument('--calculate_running', dest='calculate_running', action='store_true')
     feature_parser.add_argument('--no-calculate_running', dest='calculate_running', action='store_false')
     parser.set_defaults(calculate_running=False)
-
-    feature_parser = parser.add_mutually_exclusive_group(required=False)
-    feature_parser.add_argument('--plot_normalize', dest='plot_normalize', action='store_true')
-    feature_parser.add_argument('--no-plot_normalize', dest='plot_normalize', action='store_false')
-    parser.set_defaults(plot_normalize=False)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--q_inplace', dest='q_inplace', action='store_true')
