@@ -55,6 +55,7 @@ def parse_args():
     parser.add_argument('--local_rank', default=0, type=int, help='')
     parser.add_argument('--world_size', default=1, type=int, help='')
     parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
+    parser.add_argument('--w_max', default=0, type=float, help='clipping threshold for weights')
     parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to avoid dividing by zero')
     parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
@@ -518,7 +519,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 # now compute the 2-norm of the param_grads
                 grad_norm = 0
                 for grad in param_grads:
-                    grad_norm += args.L3 * grad.pow(2).sum()
+                    grad_norm += args.L3_old * grad.pow(2).sum()
                 # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
                 grad_norm.backward(retain_graph=False)
 
@@ -546,9 +547,22 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             if args.distort_w_train:
                 distort_weights(model, args)
 
-                #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0,
-                # 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
-                #raise(SystemExit)
+            if args.w_max > 0:
+                for n, p in model.named_parameters():
+                    if ('conv' in n or 'fc' in n) and 'weight' in n:
+                        #print(n, p.shape)
+                        p.data.clamp_(-args.w_max, args.w_max)
+                '''
+                if args.train_w_max:
+                    model.conv1.weight.data = torch.where(model.conv1.weight > model.w_max1, model.w_max1, model.conv1.weight)
+                    model.conv1.weight.data = torch.where(model.conv1.weight < model.w_min1, model.w_min1, model.conv1.weight)
+                else:
+                    model.conv1.weight.data.clamp_(-args.w_max, args.w_max)
+                '''
+
+            #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0,
+            # 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
+            #raise(SystemExit)
 
         acc = validate(val_loader, model, args, epoch=epoch)
         if acc > best_acc:

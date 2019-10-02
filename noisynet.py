@@ -226,8 +226,10 @@ parser.add_argument('--L1_4', type=float, default=0.0, metavar='', help='Negativ
 parser.add_argument('--L1', type=float, default=0.0, metavar='', help='Negative L1 penalty')
 parser.add_argument('--L2_w_max', type=float, default=0.000, metavar='', help='loss penalty scale to minimize w_max')
 parser.add_argument('--L2_act_max', type=float, default=0.000, metavar='', help='loss penalty scale to minimize act_max')
+parser.add_argument('--L2_bn', type=float, default=0.000, metavar='', help='loss penalty scale to minimize bn params (shift and scale)')
 parser.add_argument('--L2', type=float, default=0.000, metavar='', help='weight decay')
 parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
+parser.add_argument('--L3_new', type=float, default=0.000, metavar='', help='L2 for param grads')
 parser.add_argument('--L3_act', type=float, default=0.000, metavar='', help='L2 for act grads')
 parser.add_argument('--L4', type=float, default=0.000, metavar='', help='L2 for param 2nd order grads')
 parser.add_argument('--L2_1', type=float, default=0.000, metavar='', help='weight decay for layer 1')
@@ -244,7 +246,7 @@ parser.add_argument('--weight_init', type=str, default='default', metavar='', he
 parser.add_argument('--weight_init_scale_conv', type=float, default=1.0, metavar='', help='weight initialization scaling factor (soft) for conv layers')
 parser.add_argument('--weight_init_scale_fc', type=float, default=1.0, metavar='', help='weight initialization scaling factor (soft) for fc layers')
 parser.add_argument('--w_scale', type=float, default=1.0, metavar='', help='weight distortion scaling factor')
-parser.add_argument('--early_stop_after', type=int, default=60, metavar='', help='number of epochs to tolerate without improvement')
+parser.add_argument('--early_stop_after', type=int, default=100, metavar='', help='number of epochs to tolerate without improvement')
 parser.add_argument('--var_name', type=str, default='blank', metavar='', help='variable to test')
 parser.add_argument('--q_a1', type=int, default=0, metavar='', help='activation quantization bits')
 parser.add_argument('--q_w1', type=int, default=0, metavar='', help='weight quantization bits')
@@ -1094,6 +1096,7 @@ for current in current_vars:
         var_list = [0.001, 0.002, 0.005, 0.01, 0.02, 0.04]
         var_list = [0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1]
         var_list = [0.5, 0.6, 0.7, 0.8, 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 7, 10]
+        var_list = [0.0001, 0.0002, 0.0003, 0.0005, 0.001, 0.002, 0.003]
     elif args.var_name == 'L2_act_max':
         var_list = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05]
     elif args.var_name == 'uniform_ind':
@@ -1115,6 +1118,7 @@ for current in current_vars:
         var_list = [0, 0.00005, 0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007, 0.0008, 0.001]
         var_list = [0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.008, 0.01, 0.02, 0.03, 0.05]
         var_list = [0.5, 0.6, 0.7, 0.8, 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 7, 10]
+        var_list = [0, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4]
     elif args.var_name == 'L1':
         var_list = [1e-6, 2e-6, 5e-6, 1e-5, 3e-5, 2e-5, 5e-5, 0.0001]
     elif args.var_name == 'L2_2':
@@ -1129,6 +1133,8 @@ for current in current_vars:
         var_list = [0.001, 0.0025, 0.005, 0.0075, 0.01, 0.015, 0.02, 0.025, 0.03]
         var_list = [0, 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.01]
         var_list = [5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3]#0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.01]
+    elif args.var_name == 'L3_new':
+        var_list = [0, 1, 2, 3, 5, 10, 20, 30]
     elif args.var_name == 'L3_act':
         #var_list = [500000, 1000000, 2000000, 4000000, 10000000, 20000000]
         #var_list = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20]
@@ -1143,7 +1149,7 @@ for current in current_vars:
         var_list = [0.005, 0.05, 0.5, 2, 0]
     elif args.var_name == 'dropout':
         var_list = [0, 0.05, 0.1, 0.15, 0.2, 0.25]
-        var_list = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6]
+        var_list = [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6]
     elif args.var_name == 'width':
         var_list = [1, 2, 4]
     elif args.var_name == 'L2_w_max':
@@ -1432,20 +1438,25 @@ for current in current_vars:
 
             if args.batchnorm:
                 param_groups = param_groups + [
-                    {'params': model.bn1.parameters()},
-                    {'params': model.bn2.parameters()}]
+                    {'params': model.bn1.parameters(), 'weight_decay': args.L2_bn},
+                    {'params': model.bn2.parameters(), 'weight_decay': args.L2_bn}]
                 if args.bn3:
                     param_groups = param_groups + [
-                        {'params': model.bn3.parameters()}]
+                        {'params': model.bn3.parameters(), 'weight_decay': args.L2_bn}]
                 if args.bn4:
                     param_groups = param_groups + [
-                        {'params': model.bn4.parameters()}]
+                        {'params': model.bn4.parameters(), 'weight_decay': args.L2_bn}]
 
 
             if args.optim == 'SGD':
                 optimizer = torch.optim.SGD(param_groups, lr=args.LR, momentum=args.momentum, nesterov=args.nesterov)
             elif args.optim == 'Adam':
                 optimizer = torch.optim.Adam(param_groups, lr=args.LR, amsgrad=args.amsgrad)
+            elif args.optim == 'AdamW':
+                optimizer = torch.optim.AdamW(param_groups, lr=args.LR, amsgrad=args.amsgrad)
+                print('\n\n*********** Using AdamW **********\n')
+                for param_group in optimizer.param_groups:
+                    print('param_group weight decay {} LR {}'.format(param_group["weight_decay"], param_group["lr"]))
 
             if args.LR_scheduler == 'step':
                 scheduler = lr_scheduler.StepLR(optimizer, args.LR_step_after, gamma=args.LR_step)
@@ -1659,7 +1670,29 @@ for current in current_vars:
                             loss = loss + args.L2_bn_bias * (torch.sum(model.bn1.bias ** 2) + torch.sum(model.bn2.bias ** 2))
 
                     optimizer.zero_grad()
-                    loss.backward(retain_graph=True)
+
+                    if args.L3_new > 0:  # L2 penalty for gradient size
+                        params = [model.conv1.weight, model.conv2.weight, model.linear1.weight, model.linear2.weight]
+                        param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=True)
+                        # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
+                        # now compute the 2-norm of the param_grads
+                        grad_norm = 0
+                        for grad in param_grads:
+                            # print('param_grad {}:\n{}\ngrad.pow(2).mean(): {:.4f}'.format(grad.shape, grad[0,0], grad.pow(2).mean().item()))
+                            grad_norm += args.L3_new * grad.pow(2).mean()
+                        # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
+                        # grad_norm.backward(retain_graph=False)  # or like this:
+                        # print('loss {:.4f} grad_norm {:.4f}'.format(loss.item(), grad_norm.item()))
+                        #print('\nloss before', loss.item())
+                        loss = loss + grad_norm
+                        #print('\nloss after ', loss.item())
+
+                    if args.L3 > 0 or args.L4 > 0:
+                        retain_graph = True
+                    else:
+                        retain_graph = False
+
+                    loss.backward(retain_graph=retain_graph)
 
                     if args.print_stats and i == 0:
                         for act in [model.conv1_, model.conv2_, model.linear1_, model.linear2_]:
