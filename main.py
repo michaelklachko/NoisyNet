@@ -45,6 +45,8 @@ def parse_args():
     parser.add_argument('--debug', dest='debug', action='store_true', help='debug')
     parser.add_argument('--distort_w_test', dest='distort_w_test', action='store_true', help='distort weights during test')
     parser.add_argument('--distort_w_train', dest='distort_w_train', action='store_true', help='distort weights during train')
+    parser.add_argument('--distort_act', dest='distort_act', action='store_true', help='distort activations')
+    parser.add_argument('--distort_act_test', dest='distort_act_test', action='store_true', help='distort activations during test')
     parser.add_argument('--noise', default=0.1, type=float, help='mult weights by uniform noise with this range +/-')
     parser.add_argument('--stochastic', default=0.5, type=float, help='stochastic uniform noise to add before rounding during quantization')
     parser.add_argument('--step-after', default=30, type=int, help='reduce LR after this number of epochs')
@@ -52,6 +54,7 @@ def parse_args():
     parser.add_argument('--num_sims', default=1, type=int, help='number of simulations.')
     parser.add_argument('--var_name', default=None, type=str, help='var name for hyperparam search. ')
     parser.add_argument('--q_a', default=4, type=int, help='number of bits to quantize layer input')
+    parser.add_argument('--q_a_first', default=6, type=int, help='number of bits to quantize first layer input (RGB dataset)')
     parser.add_argument('--local_rank', default=0, type=int, help='')
     parser.add_argument('--world_size', default=1, type=int, help='')
     parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
@@ -153,6 +156,10 @@ def load_from_checkpoint(args):
             utils.print_model(model, args, full=True)
 
         for saved_name, saved_param in checkpoint['state_dict'].items():
+            if 'module' in saved_name:
+                model = torch.nn.DataParallel(model)
+                break
+        for saved_name, saved_param in checkpoint['state_dict'].items():
             matched = False
             if args.debug:
                 print(saved_name)
@@ -220,7 +227,7 @@ def distort_weights(model, args, s=0):
 def test_weights_distortion(val_loader, model, args):
     orig_m = copy.deepcopy(model.state_dict())
     acc_d = []
-    vars = [0.0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
+    vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
     for args.noise in vars:
         print('\n\nDistorting weights by {}%\n\n'.format(args.noise * 100))
         te_acc_dists = []
@@ -232,6 +239,7 @@ def test_weights_distortion(val_loader, model, args):
             te_accuracies_dist = []
             distort_weights(model, args, s=s)
             te_acc_d = validate(val_loader, model, args)
+            #print('Sim {:d} acc {:.2f}'.format(s, te_acc_d))
             te_accuracies_dist.append(te_acc_d.item())
             te_acc_dist = np.mean(te_accuracies_dist)
             te_acc_dists.append(te_acc_dist)
@@ -243,6 +251,28 @@ def test_weights_distortion(val_loader, model, args):
 
             if args.debug:
                 print('restored:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
+
+        avg_te_acc_dist = np.mean(te_acc_dists)
+        acc_d.append(avg_te_acc_dist)
+        print('\nNoise {:4.2f}: acc {:.2f}\n'.format(args.noise, avg_te_acc_dist))
+    print('\n\n{}\n{}\n\n\n'.format(vars, acc_d))
+
+
+def test_act_distortion(val_loader, model, args):
+    args.distort_act = True
+    acc_d = []
+    vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3, 0.4, 0.5]
+    for args.noise in vars:
+        print('\n\nDistorting activations by {}%\n\n'.format(args.noise * 100))
+        te_acc_dists = []
+
+        for s in range(args.num_sims):
+            te_accuracies_dist = []
+            te_acc_d = validate(val_loader, model, args)
+            #print('Sim {:d} acc {:.2f}'.format(s, te_acc_d))
+            te_accuracies_dist.append(te_acc_d.item())
+            te_acc_dist = np.mean(te_accuracies_dist)
+            te_acc_dists.append(te_acc_dist)
 
         avg_te_acc_dist = np.mean(te_acc_dists)
         acc_d.append(avg_te_acc_dist)
@@ -628,6 +658,10 @@ def main():
 
         if args.distort_w_test:
             test_weights_distortion(val_loader, model, args)
+            raise(SystemExit)
+
+        if args.distort_act_test:
+            test_act_distortion(val_loader, model, args)
             raise(SystemExit)
 
         print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))

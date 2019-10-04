@@ -1133,6 +1133,7 @@ for current in current_vars:
         var_list = [0.001, 0.0025, 0.005, 0.0075, 0.01, 0.015, 0.02, 0.025, 0.03]
         var_list = [0, 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.01]
         var_list = [5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3]#0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.01]
+        var_list = [0.0005, 0.001, 0.002, 0.003, 0.005, 0.007, 0.01, 0.02, 0.03]
     elif args.var_name == 'L3_new':
         var_list = [0, 1, 2, 3, 5, 10, 20, 30]
     elif args.var_name == 'L3_act':
@@ -1149,7 +1150,7 @@ for current in current_vars:
         var_list = [0.005, 0.05, 0.5, 2, 0]
     elif args.var_name == 'dropout':
         var_list = [0, 0.05, 0.1, 0.15, 0.2, 0.25]
-        var_list = [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6]
+        var_list = [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5]
     elif args.var_name == 'width':
         var_list = [1, 2, 4]
     elif args.var_name == 'L2_w_max':
@@ -1454,9 +1455,11 @@ for current in current_vars:
                 optimizer = torch.optim.Adam(param_groups, lr=args.LR, amsgrad=args.amsgrad)
             elif args.optim == 'AdamW':
                 optimizer = torch.optim.AdamW(param_groups, lr=args.LR, amsgrad=args.amsgrad)
-                print('\n\n*********** Using AdamW **********\n')
-                for param_group in optimizer.param_groups:
-                    print('param_group weight decay {} LR {}'.format(param_group["weight_decay"], param_group["lr"]))
+                if s == 0:
+                    print('\n\n*********** Using AdamW **********\n')
+                    for param_group in optimizer.param_groups:
+                        print('param_group weight decay {} LR {}'.format(param_group["weight_decay"], param_group["lr"]))
+                    print('\n')
 
             if args.LR_scheduler == 'step':
                 scheduler = lr_scheduler.StepLR(optimizer, args.LR_step_after, gamma=args.LR_step)

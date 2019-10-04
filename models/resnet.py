@@ -44,6 +44,12 @@ class BasicBlock(nn.Module):
             [conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
         if args.q_a > 0:
             x = self.quantize1(x)
+
+        if args.distort_act:
+            with torch.no_grad():
+                x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                x = x + x_noise
+
         residual = x
         out = self.conv1(x)
 
@@ -67,6 +73,11 @@ class BasicBlock(nn.Module):
 
         if args.q_a > 0:
             out = self.quantize2(out)
+
+        if args.distort_act:
+            with torch.no_grad():
+                out_noise = out * torch.cuda.FloatTensor(out.size()).uniform_(-args.noise, args.noise)
+                out = out + out_noise
 
         conv2_input = out
         out = self.conv2(out)
@@ -120,7 +131,7 @@ class ResNet(nn.Module):
             self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
+            self.quantize1 = QuantMeasure(args.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
             self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
 
         self.layer1 = self._make_layer(block, 64)
@@ -155,6 +166,11 @@ class ResNet(nn.Module):
             print('RGB input:', x.shape)
         if args.q_a > 0:
             x = self.quantize1(x)
+
+        if args.distort_act:
+            with torch.no_grad():
+                x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                x = x + x_noise
 
         conv1_input = x
 
@@ -198,6 +214,11 @@ class ResNet(nn.Module):
             print('reshaped:', x.shape)
         if args.q_a > 0:
             x = self.quantize2(x)
+
+        if args.distort_act:
+            with torch.no_grad():
+                x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                x = x + x_noise
 
         fc_input = x
 
