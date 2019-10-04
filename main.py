@@ -366,7 +366,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
             acc = utils.accuracy(output, target)
             te_accs.append(acc)
 
-            if args.q_a > 0 and args.calculate_running and i == 4:
+            if False and args.q_a > 0 and args.calculate_running and i == 4:
                 if args.debug:
                     print('\n')
                 with torch.no_grad():

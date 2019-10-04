@@ -254,7 +254,8 @@ def init_model(model, args, s=0):
                 p.data = p.data * args.weight_init_scale_conv
 
         elif 'linear' in n and 'weight' in n:
-            print('\n\nInitializing {} to kaiming normal, scale param {}\n\n'.format(n, args.weight_init_scale_fc))
+            if s == 0:
+                print('\n\nInitializing {} to kaiming normal, scale param {}\n\n'.format(n, args.weight_init_scale_fc))
             nn.init.kaiming_normal_(p, mode='fan_in', nonlinearity='relu')
             if s == 0:
                 print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_fc))

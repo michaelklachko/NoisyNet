@@ -167,7 +167,7 @@ class ResNet(nn.Module):
         if args.q_a > 0:
             x = self.quantize1(x)
 
-        if args.distort_act:
+        if False and args.distort_act:
             with torch.no_grad():
                 x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
                 x = x + x_noise
@@ -217,8 +217,10 @@ class ResNet(nn.Module):
 
         if args.distort_act:
             with torch.no_grad():
+                #print('\n\nBefore\n{}\n'.format(x[0,:10]))
                 x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
                 x = x + x_noise
+                #print('After\n{}\n'.format(x[0, :10]))
 
         fc_input = x
 
