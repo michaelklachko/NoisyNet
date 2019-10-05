@@ -1096,7 +1096,7 @@ for current in current_vars:
         var_list = [0.001, 0.002, 0.005, 0.01, 0.02, 0.04]
         var_list = [0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1]
         var_list = [0.5, 0.6, 0.7, 0.8, 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 7, 10]
-        var_list = [0.0001, 0.0002, 0.0003, 0.0005, 0.001, 0.002, 0.003]
+        var_list = [0.0001, 0.0002, 0.0003, 0.0005, 0.001, 0.002, 0.003, 0.004, 0.006, 0.008, 0.01]
     elif args.var_name == 'L2_act_max':
         var_list = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05]
     elif args.var_name == 'uniform_ind':
@@ -1564,8 +1564,8 @@ for current in current_vars:
                         acc_ = 10.  #needed to pass to forward
 
                     output = model(input, epoch, i, s, acc=acc_)
-                    loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
-
+                    #loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
+                    loss = nn.CrossEntropyLoss()(output, label)
 
                     if args.debug:
                         print('\n\nIteration', i, '\n\n')
