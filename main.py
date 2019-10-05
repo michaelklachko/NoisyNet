@@ -342,7 +342,7 @@ def merge_batchnorm(model, args):
                     print('\n\nAfter:\n', model.module.conv1.weight[0, 0, 0])
 
 
-def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
+def validate(val_loader, model, args, epoch=0, plot_acc=0.0, calculate_running=False):
     model.eval()
     te_accs = []
     with torch.no_grad():
@@ -350,17 +350,19 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
             if args.dali:
                 input = data[0]["data"]
                 target = data[0]["label"].squeeze().cuda().long()
-                input_var = Variable(input)
+                images = Variable(input)
+                '''
                 if args.fp16 and not args.amp:
-                    input_var = input_var.half()
-                output = model(input_var, epoch=epoch, i=i, acc=plot_acc)
+                    images = images.half()
+                output = model(images, epoch=epoch, i=i, acc=plot_acc)
+                '''
             else:
                 images, target = data
-                if args.fp16 and not args.amp:
-                    input = input.half()
-                images = images.cuda(non_blocking=True)
-                target = target.cuda(non_blocking=True)
-                output = model(images, epoch=epoch, i=i, acc=plot_acc)
+            if args.fp16 and not args.amp:
+                images = images.half()
+            images = images.cuda(non_blocking=True)
+            target = target.cuda(non_blocking=True)
+            output = model(images, epoch=epoch, i=i, acc=plot_acc)
             if i == 0:
                 args.print_shapes = False
             acc = utils.accuracy(output, target)
@@ -375,7 +377,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                             m.calculate_running = False
                             m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
                             if args.debug:
-                                print('running_list:', m.running_list, 'running_max:', m.running_max)
+                                print('(val) running_list:', m.running_list, 'running_max:', m.running_max)
 
         mean_acc = np.mean(te_accs)
         print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
@@ -454,6 +456,7 @@ def build_model(args):
 
 
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
+    print('\n\n\n******************************************* Best Accuracy:', best_acc, '\n\n\n')
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
         print('lr', args.lr, 'wd', args.weight_decay, 'L3', max(args.L3, args.L3_old))
@@ -469,22 +472,25 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 input = data[0]["data"]
                 target = data[0]["label"].squeeze().cuda().long()
                 train_loader_len = int(train_loader._size / args.batch_size)
-                input_var = Variable(input)
-                target_var = Variable(target)
+                images = Variable(input)
+                target = Variable(target)
+                '''
                 if args.fp16 and not args.amp:
                         input_var = input_var.half()
                 output = model(input_var, epoch=epoch, i=i)
                 #print('\n\n\noutput', output)
                 loss = criterion(output, target_var)
+                '''
             else:
                 images, target = data
-                if args.fp16 and not args.amp:
-                    images = images.half()
                 train_loader_len = len(train_loader)
                 images = images.cuda(non_blocking=True)
                 target = target.cuda(non_blocking=True)
-                output = model(images, epoch=epoch, i=i)
-                loss = criterion(output, target)
+            if args.fp16 and not args.amp:
+                images = images.half()
+
+            output = model(images, epoch=epoch, i=i)
+            loss = criterion(output, target)
 
             if i == 0:
                 args.print_shapes = False
@@ -572,7 +578,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                         if isinstance(m, QuantMeasure):
                             m.calculate_running = False
                             m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
-                            print('running_list:', m.running_list, 'running_max:', m.running_max)
+                            print('(train) running_list:', m.running_list, 'running_max:', m.running_max)
 
             if args.distort_w_train:
                 distort_weights(model, args)
@@ -602,7 +608,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             else:
                 tag = args.tag
             torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc,
-                        'optimizer': optimizer.state_dict()}, tag + '.pth')
+                        'optimizer': optimizer.state_dict()}, 'checkpoints/' + tag + '.pth')
 
         if args.dali:
             train_loader.reset()
@@ -637,10 +643,11 @@ def main():
                     model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
                     if args.merge_bn:
                         merge_batchnorm(model, args)
-                for m in model.modules():
-                    if isinstance(m, QuantMeasure):
-                        m.calculate_running = True
-                        m.running_list = []
+                if False and args.calculate_running:
+                    for m in model.modules():
+                        if isinstance(m, QuantMeasure):
+                            m.calculate_running = True
+                            m.running_list = []
                 acc = validate(val_loader, model, args, epoch=best_epoch, plot_acc=best_acc)
                 acc_list.append(acc)
             total_list.append((np.mean(acc_list), np.min(acc_list), np.max(acc_list)))

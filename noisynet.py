@@ -21,7 +21,7 @@ torch.backends.cudnn.benchmark = True
 parser = argparse.ArgumentParser(description='Your project title goes here')
 
 #parser.add_argument('--dataset', type=str, default='cifar_RGB_4bit.npz', metavar='', help='name of dataset')
-parser.add_argument('--dataset', type=str, default='data/cifar_RGB.npz', metavar='', help='name of dataset')
+parser.add_argument('--dataset', type=str, default='data/cifar_RGB_4bit.npz', metavar='', help='name of dataset')
 parser.add_argument('--resume', type=str, default=None, metavar='', help='full path of models to resume training')
 parser.add_argument('--tag', type=str, default='', metavar='', help='string to prepend to args.checkpoint_dir')
 
@@ -1607,8 +1607,6 @@ for current in current_vars:
                         if i != 0:
                             print('\nbn4.weight gradients\n', bn4_weights.grad.detach().cpu().numpy())
 
-
-
                     if args.LR_scheduler == 'triangle':
                         if epoch <= args.LR_max_epoch:
                             lr +=  lr_increment
@@ -1690,7 +1688,7 @@ for current in current_vars:
                         loss = loss + grad_norm
                         #print('\nloss after ', loss.item())
 
-                    if args.L3 > 0 or args.L4 > 0:
+                    if args.L3 > 0 or args.L4 > 0 or args.print_stats:
                         retain_graph = True
                     else:
                         retain_graph = False

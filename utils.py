@@ -255,11 +255,13 @@ def init_model(model, args, s=0):
 
         elif 'linear' in n and 'weight' in n:
             if s == 0:
-                print('\n\nInitializing {} to kaiming normal, scale param {}\n\n'.format(n, args.weight_init_scale_fc))
+                pass
+                #print('\n\nInitializing {} to kaiming normal, scale param {}\n\n'.format(n, args.weight_init_scale_fc))
             nn.init.kaiming_normal_(p, mode='fan_in', nonlinearity='relu')
             if s == 0:
-                print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_fc))
-            p.data = p.data * args.weight_init_scale_fc
+                pass
+                #print('\n\nScaling {} weights init by {}\n\n'.format(n, args.weight_init_scale_fc))
+            p.data = p.data #* args.weight_init_scale_fc
 
     if False and args.train_act_max:
         nn.init.constant_(model.act_max1, args.act_max1)

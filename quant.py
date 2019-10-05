@@ -72,6 +72,10 @@ class QuantMeasure(nn.Module):
     https://github.com/Wizaron/binary-stochastic-neurons/blob/master/utils.py
     https://github.com/penhunt/full-quantization-DNN/blob/master/nets/quant_uni_type.py
     https://github.com/salu133445/bmusegan/blob/master/musegan/utils/ops.py
+
+    Calculate_running indicates if we want to calculate the given percentile of signals to use as a max_value for quantization range
+    if True, we will calculate pctl for several batches (only on training set), and use the average as a running_max, which will became max_value
+    if False we will either use self.max_value (if given), or self.running_max (previously calculated)
     '''
 
     def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1,
@@ -95,10 +99,12 @@ class QuantMeasure(nn.Module):
     def forward(self, input):
         #max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
         with torch.no_grad():
-            if self.calculate_running:
-                if 224 in list(input.shape):
-                    #print('RGB')
-                    pctl = torch.tensor(0.92)
+            if self.calculate_running and self.training:
+                if 224 in list(input.shape): #first layer input is special (needs more precision)
+                    if self.num_bits == 4:
+                        pctl = torch.tensor(0.92)  #args.q_a_first == 4
+                    else:
+                        pctl = torch.tensor(1.0)
                 else:
                     pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
                 #print('input.shape', input.shape, 'pctl.shape', pctl.shape)
@@ -109,8 +115,14 @@ class QuantMeasure(nn.Module):
                 if self.debug:
                     print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
             else:
-                max_value = self.running_max.item()
-                #max_value = input.max()
+                if self.max_value > 0:
+                    max_value = self.max_value
+                elif self.running_max.item() > 0:
+                    max_value = self.running_max.item()
+                else:
+                    #print('\n\nrunning_max is ', self.running_max.item())
+                    max_value = input.max()
+
                 if False and max_value > 1:
                     max_value = max_value * self.scale
 
