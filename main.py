@@ -156,7 +156,8 @@ def load_from_checkpoint(args):
             utils.print_model(model, args, full=True)
 
         for saved_name, saved_param in checkpoint['state_dict'].items():
-            if 'module' in saved_name:
+            #if saved model used DataParallel, convert this model to DP even if using a single GPU
+            if 'module' in saved_name and torch.cuda.device_count() == 1:
                 model = torch.nn.DataParallel(model)
                 break
         for saved_name, saved_param in checkpoint['state_dict'].items():
@@ -342,7 +343,7 @@ def merge_batchnorm(model, args):
                     print('\n\nAfter:\n', model.module.conv1.weight[0, 0, 0])
 
 
-def validate(val_loader, model, args, epoch=0, plot_acc=0.0, calculate_running=False):
+def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
     model.eval()
     te_accs = []
     with torch.no_grad():
@@ -456,7 +457,6 @@ def build_model(args):
 
 
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
-    print('\n\n\n******************************************* Best Accuracy:', best_acc, '\n\n\n')
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
         print('lr', args.lr, 'wd', args.weight_decay, 'L3', max(args.L3, args.L3_old))
