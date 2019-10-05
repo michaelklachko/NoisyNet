@@ -182,6 +182,7 @@ parser.add_argument('--act_max1', type=float, default=0.0, metavar='', help='max
 parser.add_argument('--act_max2', type=float, default=0.0, metavar='', help='max value for ReLU2 act (clipping upper bound)')
 parser.add_argument('--act_max3', type=float, default=0.0, metavar='', help='max value for ReLU3 act (clipping upper bound)')
 parser.add_argument('--w_min1', type=float, default=0.0, metavar='', help='min value for layer 1 weights (clipping lower bound)')
+parser.add_argument('--w_max', type=float, default=0.0, metavar='', help='max value for layer 1 weights (clipping upper bound)')
 parser.add_argument('--w_max1', type=float, default=0.0, metavar='', help='max value for layer 1 weights (clipping upper bound)')
 parser.add_argument('--w_max2', type=float, default=0.0, metavar='', help='max value for layer 2 weights (clipping upper bound)')
 parser.add_argument('--w_max3', type=float, default=0.0, metavar='', help='max value for layer 3 weights (clipping upper bound)')
@@ -1191,6 +1192,9 @@ for current in current_vars:
         if args.act_max > 0:
             print('\n\nSetting act clipping in all layers to {}\n\n'.format(args.act_max))
             args.act_max1 = args.act_max2 = args.act_max3 = args.act_max
+
+        if args.w_max > 0:
+            args.w_max1 = args.w_max2 = args.w_max3 = args.w_max4 = args.w_max
 
         if args.var_name == "LR":
             args.LR_1 = args.LR_2 = args.LR_3 = args.LR_4 = args.LR
