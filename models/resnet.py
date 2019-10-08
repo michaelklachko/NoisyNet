@@ -130,8 +130,18 @@ class ResNet(nn.Module):
         else:
             self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        if args.q_a_first > 0:
-            self.quantize1 = QuantMeasure(args.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug, inplace=args.q_inplace)
+
+        if args.q_a_first > 0:  #when quantizing, if q_a_first is not specified, set it to 6 bits
+            self.q_a_first = args.q_a_first
+        elif args.q_a > 0:
+            self.q_a_first = 6
+        elif args.q_a_first == 8:
+            self.q_a_first = 0
+        else:
+            self.q_a_first = 0
+
+        if self.q_a_first > 0:
+            self.quantize1 = QuantMeasure(self.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug, inplace=args.q_inplace)
         if args.q_a > 0:
             self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
 
@@ -165,7 +175,7 @@ class ResNet(nn.Module):
     def forward(self, x, epoch=0, i=0, acc=0.0):
         if args.print_shapes:
             print('RGB input:', x.shape)
-        if args.q_a_first > 0:
+        if self.q_a_first > 0:
             x = self.quantize1(x)
 
         if False and args.distort_act:

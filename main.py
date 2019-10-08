@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument('--num_sims', default=1, type=int, help='number of simulations.')
     parser.add_argument('--var_name', default=None, type=str, help='var name for hyperparam search. ')
     parser.add_argument('--q_a', default=4, type=int, help='number of bits to quantize layer input')
-    parser.add_argument('--q_a_first', default=6, type=int, help='number of bits to quantize first layer input (RGB dataset)')
+    parser.add_argument('--q_a_first', default=0, type=int, help='number of bits to quantize first layer input (RGB dataset)')
     parser.add_argument('--local_rank', default=0, type=int, help='')
     parser.add_argument('--world_size', default=1, type=int, help='')
     parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
