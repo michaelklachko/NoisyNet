@@ -6,6 +6,7 @@ import warnings
 import numpy as np
 from datetime import datetime
 import copy
+import random
 
 import torch
 import torch.nn as nn
@@ -313,7 +314,8 @@ def merge_batchnorm(model, args):
                 param.data *= model.state_dict()[bn_weight].data.view(-1, 1, 1, 1) / torch.sqrt(model.state_dict()[bn_running_var].data.view(-1, 1, 1, 1) + args.eps)
                 if name == 'module.features.15.conv2.conv.weight' and args.debug:
                     print('\n\nAfter:\n', param[0, :10])  #, model.module.features.15.conv2.conv.weight[0, :10])
-    else:
+
+    elif args.arch == 'resnet18':
         for name, param in model.state_dict().items():  #model.named_parameters():
             if name == 'module.conv1.weight':
                 if args.debug:
@@ -341,6 +343,61 @@ def merge_batchnorm(model, args):
             if name == 'module.conv1.weight':
                 if args.debug:
                     print('\n\nAfter:\n', model.module.conv1.weight[0, 0, 0])
+
+    elif args.arch == 'noisynet':
+        print('\n\nMerging batchnorm into weights\n')
+        # scale1 = model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
+        bn1_weights = model.bn1.weight
+        bn1_biases = model.bn1.bias
+        bn1_run_var = model.bn1.running_var
+        bn1_run_mean = model.bn1.running_mean
+        bn1_scale = bn1_weights.data.view(-1, 1, 1, 1) / torch.sqrt(bn1_run_var.data.view(-1, 1, 1, 1) + 0.0000001)
+        if args.debug:
+            print('\nconv1 bn1.weight\n', bn1_weights.detach().cpu().numpy())
+            print('\nconv1 bn1.bias\n', bn1_biases.detach().cpu().numpy())
+            print('\nconv1 bn1 run_vars\n', bn1_run_var.detach().cpu().numpy())
+            print('\nbn1 run_means\n', bn1_run_mean.detach().cpu().numpy())
+            print('\nconv1 bn1 scale\n', bn1_scale.view(-1).detach().cpu().numpy())
+        model.conv1.weight.data *= bn1_scale  # (64,3,5,5) x (64)
+
+        bn2_weights = model.bn2.weight
+        bn2_biases = model.bn2.bias
+        bn2_run_var = model.bn2.running_var
+        bn2_run_mean = model.bn2.running_mean
+        bn2_scale = bn2_weights.data.view(-1, 1, 1, 1) / torch.sqrt(bn2_run_var.data.view(-1, 1, 1, 1) + 0.0000001)
+        if args.debug:
+            print('\nconv2 bn2.weight\n', bn2_weights.detach().cpu().numpy())
+            print('\nconv1 bn2.bias\n', bn2_biases.detach().cpu().numpy())
+            print('\nconv2 bn2 run_vars\n', bn2_run_var.detach().cpu().numpy())
+            print('\nbn2 run_means\n', bn2_run_mean.detach().cpu().numpy())
+            print('\nconv2 bn2 scale\n', bn2_scale.view(-1).detach().cpu().numpy())
+        model.conv2.weight.data *= bn2_scale
+
+        bn3_weights = model.bn3.weight
+        bn3_biases = model.bn3.bias
+        bn3_run_var = model.bn3.running_var
+        bn3_run_mean = model.bn3.running_mean
+        bn3_scale = bn3_weights.data.view(-1, 1) / torch.sqrt(bn3_run_var.data.view(-1, 1) + 0.0000001)
+        if args.debug:
+            print('\nbn3.weight\n', bn3_weights.detach().cpu().numpy())
+            print('\nbn3.bias\n', bn3_biases.detach().cpu().numpy())
+            print('\nbn3 run_vars\n', bn3_run_var.detach().cpu().numpy())
+            print('\nbn3 run_means\n', bn3_run_mean.detach().cpu().numpy())
+            print('\nbn3 scale\n', bn3_scale.view(-1).detach().cpu().numpy())
+        model.linear1.weight.data *= bn3_scale
+
+        bn4_weights = model.bn4.weight
+        bn4_biases = model.bn4.bias
+        bn4_run_var = model.bn4.running_var
+        bn4_run_mean = model.bn4.running_mean
+        bn4_scale = bn4_weights.data.view(-1, 1) / torch.sqrt(bn4_run_var.data.view(-1, 1) + 0.0000001)
+        if args.debug:
+            print('\nbn4.weight\n', bn4_weights.detach().cpu().numpy())
+            print('\nbn4.bias\n', bn4_biases.detach().cpu().numpy())
+            print('\nbn4 run_vars\n', bn4_run_var.detach().cpu().numpy())
+            print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
+            print('\nbn4 scale\n', bn4_scale.view(-1).detach().cpu().numpy())
+        model.linear2.weight.data *= bn4_scale
 
 
 def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
@@ -613,12 +670,18 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
         if args.dali:
             train_loader.reset()
 
-    print('\n\nBest Accuracy {:.2f}\n\n'.format(best_acc))
-
 
 def main():
-    cudnn.benchmark = True
     args = parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        cudnn.deterministic = True
+        warnings.warn('****** You have chosen to seed training. This will turn on the CUDNN deterministic setting, and training will be SLOW! ******')
+    else:
+        cudnn.benchmark = True
+
     if args.gpu is not None:
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 

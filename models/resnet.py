@@ -69,6 +69,9 @@ class BasicBlock(nn.Module):
         else:
             out = self.bn1(out)
 
+        if args.plot:
+            arrays.append([out.half()])
+
         out = self.relu(out)
 
         if args.q_a > 0:
@@ -96,6 +99,9 @@ class BasicBlock(nn.Module):
                 arrays.append([bias.half()])
         else:
             out = self.bn2(out)
+
+        if args.plot:
+            arrays.append([out.half()])
 
         if self.downsample is not None:
             residual = self.conv3(x)
@@ -201,6 +207,9 @@ class ResNet(nn.Module):
         else:
             x = self.bn1(x)
 
+        if args.plot:
+            arrays.append([x.half()])
+
         x = self.relu(x)
         x = self.maxpool(x)
         if args.print_shapes:
@@ -247,6 +256,9 @@ class ResNet(nn.Module):
             print('\noutput:', x.shape)
 
         if args.plot:
+            arrays.append([x.half()])
+
+        if args.plot:
             if args.plot_basic:
                 names = ['input', 'weights', 'vmm']
             else:
@@ -254,6 +266,8 @@ class ResNet(nn.Module):
 
             if args.merge_bn:
                 names.append('bias')
+
+            names.append('pre-activations')
 
             print('\n\nPreparing arrays for plotting:\n')
             layers = []
@@ -268,13 +282,11 @@ class ResNet(nn.Module):
                 layers.append(layer)
                 layer = []
 
-            print('\nPlotting {}\n'.format(names))
-            var_ = ''#[np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]), np.prod(self.linear2.weight.shape[1:])]
+            var_ = ''
             var_name = ''
 
             plot_layers(num_layers=len(layers), models=['plots/'], epoch=epoch, i=i, layers=layers,
                         names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.normalize)
-            print('\n\nSaved plots to current dir\n\n')
             raise (SystemExit)
 
         return x

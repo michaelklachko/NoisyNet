@@ -225,7 +225,7 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
             place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r + 1) + ' ', name=name, infos=layer_info, pctl=pctl, max_input=max_input,
                       max_weight=thr, labels=labels, normalize=normalize)
     print('\n\nSaving plot to {}\n'.format(path + filename))
-    plt.savefig(path + filename, dpi=200, bbox_inches='tight')
+    plt.savefig(path + filename, dpi=120, bbox_inches='tight')
     print('\nDone!\n')
     plt.close()
 
@@ -296,6 +296,9 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
     else:
         filename = 'epoch_{:d}_iter_{:d}_acc_{:.2f}_{}.png'.format(epoch, i, acc, tag)
 
+    if infos is None:
+        infos = [['', '']] * num_layers  #TODO get rid of this
+
     plot_grid(layers, names, path=models[0], filename=filename, labels=labels, info=infos, pctl=pctl, normalize=normalize)
 
 
@@ -306,11 +309,45 @@ if __name__ == "__main__":
     model1 = 'results/power_c1_10_L2_1_0.00_current-10.0-10.0-10.0-10.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-0.0-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.001_grad_clip-0.0_2019-10-05_14-31-00/'
     model3 = 'results/current-1.0-1.0-1.0-1.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-100.0-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.005_grad_clip-0.0_2019-01-01_13-18-31/'
 
-    models = [model1, model2]
+    model3 = 'results/power_c1_10_L2_1_0.00_clipped_current-10.0-10.0-10.0-10.0_L3-0.0_L3_act-0.0_L2-0.0-0.0-0.0-0.0_actmax-2.0-2.0-2.0_w_max1-0.2-0.2-0.2-0.2_bn-True_LR-0.001_grad_clip-0.0_2019-10-05_15-09-26/'
+    model4 = 'results/power_c1_10_L2_1_0.001_clipped_current-10.0-10.0-10.0-10.0_L3-0.0_L3_act-0.0_L2-0.001-0.0-0.0-0.0_actmax-2.0-2.0-2.0_w_max1-0.2-0.2-0.2-0.2_bn-True_LR-0.001_grad_clip-0.0_2019-10-05_15-11-09/'
+    models = [model1, model2, model3, model4]
 
     print('\n\nPlotting histograms for {:d} models\n'.format(len(models)))
-    var = 'L2'
-    vars = [0.000, 0.001]
+    var = ''
+    vars = ['no L2 no clip', 'L2 no clip', 'no L2 clip', 'L2 clip']
 
-    tag = '_power'
+    tag = '_all_four___'
     plot_layers(num_layers=4, models=models, epoch=0, i=0, var=var, vars=vars, tag=tag, pctl=99.9, normalize=False)
+
+'''
+#first layer:
+filter1 = abs(conv1.weight)
+abs_out1 = conv2d(RGB_input, filter1)
+sample_sums1 = sum(abs_out1, dim=(1, 2, 3))
+w_max1 = max(filter1)
+x_max1 = 1  #max(RGB_input) is always 1
+if merged_dac:  #merged DAC digital input (for the current chip - first and third layer input):
+    p1 = 1.0e-6 * 1.2 * max_current1 * mean(sample_sums1) / (x_max1 * w_max1)
+    p1_values = abs_out1 / (x_max1 * w_max1)
+    noise1 = Normal(mean=0, std=sqrt(0.1 * abs_out1 * w_max1 / max_current1))
+else:  #external DAC (for the next gen hardware) or analog input in the current chip (for layers 2 and 4)
+    p1 = 1.0e-6 * 1.2 * max_current1 * mean(sample_sums) / x_max1
+    p1_values = abs_out1 / x_max1
+    #noise:
+    f1 = filter1.pow(2) + filter1
+    abs_out_noise1 = F.conv2d(RGB_input, f1)
+    noise1 = Normal(mean=0, std=sqrt(0.1 * abs_out_noise1 * x_max1 / max_current1))
+
+# second layer: either analog input or external DAC
+filter2 = abs(conv2.weight)
+f2 = filter2.pow(2) + filter2
+abs_out2 = conv2d(relu1, f2)
+x_max2 = max(relu1)
+sample_sums2 = sum(abs_out2, dim=(1, 2, 3))
+p2 = 1.0e-6 * 1.2 * max_current2 * mean(sample_sums2) / x_max2
+p2_values = abs_out2 / x_max2
+
+#abs_out2 = conv2d(relu1, filter2)  ???
+noise2 = Normal(mean=0, std=torch.sqrt(0.1 * abs_out2 * x_max2 / max_current2))
+'''

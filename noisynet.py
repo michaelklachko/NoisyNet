@@ -14,8 +14,9 @@ import numpy as np
 import utils
 from misc_code.quant_orig import QConv2d, QLinear, QuantMeasure
 from plot_histograms import plot_layers, get_layers
+from hardware_model import add_noise_calculate_power
+from main import merge_batchnorm
 
-torch.backends.cudnn.benchmark = True
 #CUDA_LAUNCH_BLOCKING=1
 
 parser = argparse.ArgumentParser(description='Your project title goes here')
@@ -190,6 +191,7 @@ feature_parser.add_argument('--calculate_running', dest='calculate_running', act
 feature_parser.add_argument('--no-calculate_running', dest='calculate_running', action='store_false')
 parser.set_defaults(calculate_running=False)
 
+parser.add_argument('-a', '--arch', metavar='ARCH', default='noisynet')
 parser.add_argument('--current', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current1', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current2', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
@@ -215,7 +217,7 @@ parser.add_argument('--dropout_conv', type=float, default=0.0, metavar='', help=
 parser.add_argument('--batch_size', type=int, default=64, metavar='', help='batch size for training')
 parser.add_argument('--nepochs', type=int, default=250, metavar='', help='number of epochs to train')
 parser.add_argument('--num_sim', type=int, default=1, metavar='', help='number of simulation runs')
-parser.add_argument('--num_layers', type=int, default=1, metavar='', help='number of layers')
+parser.add_argument('--num_layers', type=int, default=4, metavar='', help='number of layers')
 parser.add_argument('--fs', type=int, default=5, metavar='', help='filter size')
 parser.add_argument('--fm1', type=int, default=65, metavar='', help='number of feature maps in the first layer')
 parser.add_argument('--fm2', type=int, default=120, metavar='', help='number of feature maps in the first layer')
@@ -279,7 +281,7 @@ parser.add_argument('--q_a4', type=int, default=0, metavar='', help='activation 
 parser.add_argument('--q_w4', type=int, default=0, metavar='', help='weight quantization bits')
 parser.add_argument('--stochastic', type=float, default=0.5, metavar='', help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
-parser.add_argument('--seed', type=int, default=1, metavar='', help='random seed')
+parser.add_argument('--seed', type=int, default=None, metavar='', help='random seed')
 parser.add_argument('--uniform_ind', type=float, default=0.0, metavar='', help='add random uniform in [-a, a] range to act x, where a is this value')
 parser.add_argument('--uniform_dep', type=float, default=0.0, metavar='', help='multiply act x by random uniform in [x/a, ax] range, where a is this value')
 parser.add_argument('--normal_ind', type=float, default=0.0, metavar='', help='add random normal with 0 mean and variance = a to each act x where a is this value')
@@ -287,8 +289,15 @@ parser.add_argument('--normal_dep', type=float, default=0.0, metavar='', help='a
 parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
 
 args = parser.parse_args()
-random.seed(args.seed)
-torch.manual_seed(args.seed)
+
+if args.seed is not None:
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    print('\n\n****** You have chosen to seed training. This will turn on the CUDNN deterministic setting, and training will be SLOW! ******\n\n')
+else:
+    torch.backends.cudnn.benchmark = True
+
 if args.gpu is not None:
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
@@ -366,8 +375,7 @@ class Net(nn.Module):
             #pass
             self.conv1.weight.data = self.conv1.weight.data / 20.
         '''
-        if args.plot or args.write:  # do it here because plots can be generated more than once (during training)
-            arrays = []
+        arrays = []
 
         if args.q_a1 > 0:
             self.input = self.quantize1(input)
@@ -389,86 +397,14 @@ class Net(nn.Module):
                 arrays.append([self.bias1.half()])
         else:
             self.conv1_ = self.conv1_no_bias
-            #self.bias1 = torch.Tensor([0])
 
         if epoch == 0 and i == 0 and s == 0 and self.training:
             print('conv1 out shape:', self.conv1_.shape)
 
         if args.current1 > 0:
-            with torch.no_grad():
-
-                if (args.uniform_ind > 0 and self.training) or (args.uniform_ind > 0 and args.noise_test):
-                    sigmas1 = torch.ones_like(self.conv1_) * args.uniform_ind * torch.max(torch.abs(self.conv1_))
-                    noise1_distr = Uniform(-sigmas1, sigmas1)
-                    self.noise1 = noise1_distr.sample()
-
-                elif (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                    noise1_distr = Uniform(torch.ones_like(self.conv1_) * args.uniform_dep, torch.ones_like(self.conv1_) / args.uniform_dep)
-                    self.noise1 = noise1_distr.sample()
-
-                elif (args.normal_ind > 0 and self.training) or (args.normal_ind > 0 and args.noise_test):
-                    sigmas1 = (torch.ones_like(self.conv1_) * args.normal_ind * torch.max(torch.abs(self.conv1_))).pow(2)
-                    noise1_distr = Normal(loc=0, scale=torch.ones_like(self.conv1_) * args.normal_ind * torch.max(torch.abs(self.conv1_)))
-                    self.noise1 = noise1_distr.sample()
-
-                elif (args.normal_dep > 0 and self.training) or (args.normal_dep > 0 and args.noise_test):
-                    sigmas1 = (args.normal_dep * self.conv1_).pow(2)
-                    noise1_distr = Normal(loc=0, scale=args.normal_dep * self.conv1_)
-                    self.noise1 = noise1_distr.sample()
-
-                else:
-                    filter1 = torch.abs(self.conv1.weight)
-                    x_max1 = 1  #torch.max(self.input) is always 1 for quantized cifar input
-                    if args.merged_dac:  #merged DAC digital input (for the current chip - first and third layer input):
-                        sigmas1 = F.conv2d(self.input, filter1)
-                        w_max1 = torch.max(filter1)
-                        noise1_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (w_max1 / args.current1) * sigmas1))
-                        if i < 20:  #calcuate power consumption
-                            a1_sums = torch.sum(sigmas1, dim=(1, 2, 3))
-                            self.p1 = 1.0e-6 * 1.2 * args.current1 * torch.mean(a1_sums) / (x_max1 * w_max1)
-
-                            if (args.plot or args.write) and args.plot_power:
-                                arrays.append([(sigmas1 / (x_max1 * w_max1)).half()])
-
-                    else:  #external DAC (for the next gen hardware) or analog input in the current chip (layers 2 and 4)
-                        f1 = filter1.pow(2) + filter1
-                        sigmas1 = F.conv2d(self.input, f1)
-                        noise1_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (x_max1 / args.current1) * sigmas1))
-                        if i < 20:  #calcuate power consumption
-                            a1 = F.conv2d(self.input, filter1)
-                            a1_sums = torch.sum(a1, dim=(1, 2, 3))
-                            self.p1 = 1.0e-6 * 1.2 * args.current1 * torch.mean(a1_sums) / x_max1
-
-                            if (args.plot or args.write) and args.plot_power:
-                                arrays.append([(a1 / x_max1).half()])
-
-                    self.noise1 = noise1_distr.sample()
-
-            if (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                self.conv1_noisy = self.conv1_ * self.noise1.cuda()
-            else:
-                self.conv1_noisy = self.conv1_ + self.noise1.cuda()
-
-            conv1_out = self.conv1_noisy
-
-            if (args.plot or args.write) and args.plot_noise:
-                arrays += ([sigmas1], [self.noise1])
+            conv1_out = add_noise_calculate_power(self, args, arrays, self.input, self.conv1.weight, self.conv1_, layer_type='conv', i=i, layer_num=0, merged_dac=args.merged_dac)
         else:
             conv1_out = self.conv1_
-            if i < 20 and args.print_stats:
-                filter1 = torch.abs(self.conv1.weight)
-                a1 = F.conv2d(self.input, filter1)
-                a1_sums = torch.sum(a1, dim=(1, 2, 3))
-                x_max1 = 1  #torch.max(self.input) is always 1 for quantized cifar input
-                if args.merged_dac:
-                    w_max1 = torch.max(torch.abs(self.conv1.weight))
-                    self.p1 = 1.0e-6 * 1.2 * 30 * torch.mean(a1_sums) / (x_max1 * w_max1)  #50nA corresponds to no noise
-                else:
-                    self.p1 = 1.0e-6 * 1.2 * 30 * torch.mean(a1_sums) / x_max1
-
-        if i == 0 and not self.training:
-            pass
-            #print('\n\t\t\t\t\tTesting...  Scaling conv1 by 2...\n')
 
         pool1 = self.pool(conv1_out)
 
@@ -521,67 +457,14 @@ class Net(nn.Module):
                 arrays.append([self.bias2.half()])
         else:
             self.conv2_ = self.conv2_no_bias
-            #self.bias2 = torch.Tensor([0])
-
 
         if epoch == 0 and i == 0 and s == 0 and self.training:
             print('conv2 out shape:', self.conv2_.shape)
 
         if args.current2 > 0:
-
-            with torch.no_grad():
-                filter2 = torch.abs(self.conv2.weight)
-
-                if (args.uniform_ind > 0 and self.training) or (args.uniform_ind > 0 and args.noise_test):
-                    sigmas2 = torch.ones_like(self.conv2_) * args.uniform_ind * torch.max(torch.abs(self.conv2_))
-                    noise2_distr = Uniform(-sigmas2, sigmas2)
-                    self.noise2 = noise2_distr.sample()
-
-                elif (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                    noise2_distr = Uniform(torch.ones_like(self.conv2_) * args.uniform_dep, torch.ones_like(self.conv2_) / args.uniform_dep)
-                    self.noise2 = noise2_distr.sample()
-
-                elif (args.normal_ind > 0 and self.training) or (args.normal_ind > 0 and args.noise_test):
-                    sigmas2 = (torch.ones_like(self.conv2_) * args.normal_ind * torch.max(torch.abs(self.conv2_))).pow(2)
-                    noise2_distr = Normal(loc=0, scale=torch.ones_like(self.conv2_) * args.normal_ind * torch.max(torch.abs(self.conv2_)))
-                    self.noise2 = noise2_distr.sample()
-
-                elif (args.normal_dep > 0 and self.training) or (args.normal_dep > 0 and args.noise_test):
-                    sigmas2 = (args.normal_dep * self.conv2_).pow(2)
-                    noise2_distr = Normal(loc=0, scale=args.normal_dep * self.conv2_)
-                    self.noise2 = noise2_distr.sample()
-
-                else:  #accurate noise model: this layer always accepts either analog input or external DAC
-                    f2 = filter2.pow(2) + filter2
-                    sigmas2 = F.conv2d(self.relu1, f2)
-                    x_max2 = torch.max(self.relu1)
-                    noise2_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (x_max2 / args.current2) * sigmas2))
-                    self.noise2 = noise2_distr.sample()
-
-                    if i < 20:
-                        a2_sums = torch.sum(sigmas2, dim=(1, 2, 3))
-                        self.p2 = 1.0e-6 * 1.2 * args.current2 * torch.mean(a2_sums) / x_max2
-
-                        if (args.plot or args.write) and args.plot_power:
-                            arrays.append([(sigmas2/x_max2).half()])
-
-
-            if (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                conv2_noisy = self.conv2_ * self.noise2.cuda()
-            else:
-                conv2_noisy = self.conv2_ + self.noise2
-            conv2_out = conv2_noisy
-
-            if (args.plot or args.write) and args.plot_noise:
-                arrays += ([sigmas2], [self.noise2])
+            conv2_out = add_noise_calculate_power(self, args, arrays, self.relu1, self.conv2.weight, self.conv2_, layer_type='conv', i=i, layer_num=1, merged_dac=False)
         else:
             conv2_out = self.conv2_
-            if i < 20 and args.print_stats:
-                f2 = torch.abs(self.conv2.weight)
-                a2 = F.conv2d(self.relu1, f2)
-                a2_sums = torch.sum(a2, dim=(1, 2, 3))
-                x_max2 = torch.max(self.relu1)
-                self.p2 = 30 * 1.0e-6 * 1.2 * torch.mean(a2_sums) / x_max2
 
         pool2 = self.pool(conv2_out)
 
@@ -631,76 +514,11 @@ class Net(nn.Module):
                 arrays.append([self.bias3.half()])
         else:
             self.linear1_ = self.linear1_no_bias
-            #self.bias3 = torch.Tensor([0])
 
         if args.current3 > 0:
-
-            with torch.no_grad():
-
-                if (args.uniform_ind > 0 and self.training) or (args.uniform_ind > 0 and args.noise_test):
-                    sigmas3 = torch.ones_like(self.linear1_) * args.uniform_ind * torch.max(torch.abs(self.linear1_))
-                    noise3_distr = Uniform(-sigmas3, sigmas3)
-                    self.noise3 = noise3_distr.sample()
-
-                elif (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                    noise3_distr = Uniform(torch.ones_like(self.linear1_) * args.uniform_dep, torch.ones_like(self.linear1_) / args.uniform_dep)
-                    self.noise3 = noise3_distr.sample()
-
-                elif (args.normal_ind > 0 and self.training) or (args.normal_ind > 0 and args.noise_test):
-                    sigmas3 = (torch.ones_like(self.linear1_) * args.normal_ind * torch.max(torch.abs(self.linear1_))).pow(2)
-                    noise3_distr = Normal(loc=0, scale=torch.ones_like(self.linear1_) * args.normal_ind * torch.max(torch.abs(self.linear1_)))
-                    self.noise3 = noise3_distr.sample()
-
-                elif (args.normal_dep > 0 and self.training) or (args.normal_dep > 0 and args.noise_test):
-                    sigmas3 = (args.normal_dep * self.linear1_).pow(2)
-                    noise3_distr = Normal(loc=0, scale=args.normal_dep * self.linear1_)
-                    self.noise3 = noise3_distr.sample()
-
-                else:
-                    filter3 = torch.abs(self.linear1.weight)
-                    x_max3 = torch.max(self.relu2)
-                    if args.merged_dac:  #merged DAC digital input (for the current chip - first and third layer input):
-                        sigmas3 = F.linear(self.relu2, filter3, bias=self.linear1.bias)
-                        w_max3 = torch.max(filter3)
-                        noise3_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (w_max3 / args.current3) * sigmas3))
-                        if i < 20:  #calcuate power consumption
-                            a3_sums = torch.sum(sigmas3, dim=1)
-                            self.p3 = 1.0e-6 * 1.2 * args.current3 * torch.mean(a3_sums) / (x_max3 * w_max3)
-                            if (args.plot or args.write) and args.plot_power:
-                                arrays.append([(sigmas3 / (x_max3 * w_max3)).half()])
-                    else:  #external DAC (for the next gen hardware) or analog input in the current chip (layers 2 and 4)
-                        f3 = filter3.pow(2) + filter3
-                        sigmas3 = F.linear(self.relu2, f3, bias=self.linear1.bias)
-                        noise3_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (x_max3 / args.current3) * sigmas3))
-                        if i < 20:  #calcuate power consumption
-                            a3_sums = torch.sum(sigmas3, dim=1)
-                            self.p3 = 1.0e-6 * 1.2 * args.current3 * torch.mean(a3_sums) / x_max3
-                            if (args.plot or args.write) and args.plot_power:
-                                arrays.append([(sigmas3 / x_max3).half()])
-
-                    self.noise3 = noise3_distr.sample()
-
-            if (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                linear1_noisy = self.linear1_ * self.noise3.cuda()
-            else:
-                linear1_noisy = self.linear1_ + self.noise3
-
-            linear1_out = linear1_noisy
-
-            if (args.plot or args.write) and args.plot_noise:
-                arrays += ([sigmas3], [self.noise3])
+            linear1_out = add_noise_calculate_power(self, args, arrays, self.relu2, self.linear1.weight, self.linear1_, layer_type='linear', i=i, layer_num=2, merged_dac=args.merged_dac)
         else:
             linear1_out = self.linear1_
-            if i < 20 and args.print_stats:
-                f3 = torch.abs(self.linear1.weight)
-                a3 = F.linear(self.relu2, f3, bias=self.linear1.bias)
-                a3_sums = torch.sum(a3, dim=1)
-                x_max3 = torch.max(self.relu2)
-                if args.merged_dac:
-                    w_max3 = torch.max(torch.abs(self.linear1.weight))
-                    self.p3 = 30 * 1.0e-6 * 1.2 * torch.mean(a3_sums) / (x_max3 * w_max3)
-                else:
-                    self.p3 = 30 * 1.0e-6 * 1.2 * torch.mean(a3_sums) / x_max3
 
         if args.batchnorm and args.bn3 and not args.merge_bn:
             self.linear1_out = self.bn3(linear1_out)
@@ -749,60 +567,9 @@ class Net(nn.Module):
             self.bias4 = torch.Tensor([0])
 
         if args.current4 > 0:
-
-            with torch.no_grad():
-                if (args.uniform_ind > 0 and self.training) or (args.uniform_ind > 0 and args.noise_test):
-                    sigmas4 = torch.ones_like(self.linear2_) * args.uniform_ind * torch.max(torch.abs(self.linear2_))
-                    noise4_distr = Uniform(-sigmas4, sigmas4)
-                    self.noise4 = noise4_distr.sample()
-
-                elif (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                    noise4_distr = Uniform(torch.ones_like(self.linear2_) * args.uniform_dep, torch.ones_like(self.linear2_) / args.uniform_dep)
-                    self.noise4 = noise4_distr.sample()
-
-                elif (args.normal_ind > 0 and self.training) or (args.normal_ind > 0 and args.noise_test):
-                    sigmas4 = (torch.ones_like(self.linear2_) * args.normal_ind * torch.max(torch.abs(self.linear2_))).pow(2)
-                    noise4_distr = Normal(loc=0, scale=torch.ones_like(self.linear2_) * args.normal_ind * torch.max(torch.abs(self.linear2_)))
-                    self.noise4 = noise4_distr.sample()
-
-                elif (args.normal_dep > 0 and self.training) or (args.normal_dep > 0 and args.noise_test):
-                    sigmas4 = (args.normal_dep * self.linear2_).pow(2)
-                    noise4_distr = Normal(loc=0, scale=args.normal_dep * self.linear2_)
-                    self.noise4 = noise4_distr.sample()
-
-                else:
-                    filter4 = torch.abs(self.linear2.weight)
-                    f4 = filter4.pow(2) + filter4
-                    sigmas4 = F.linear(self.relu3, f4, bias=self.linear2.bias)
-                    x_max4 = torch.max(self.relu3)
-                    noise4_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (x_max4 / args.current4) * sigmas4))
-
-                    if i < 20:
-                        a4_sums = torch.sum(sigmas4, dim=1)
-                        self.p4 = 1.0e-6 * 1.2 * args.current4 * torch.mean(a4_sums) / x_max4
-
-                        if (args.plot or args.write) and args.plot_power:
-                            arrays.append([(sigmas4 / x_max4).half()])
-
-                    self.noise4 = noise4_distr.sample()
-
-            if (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
-                linear2_noisy = self.linear2_ * self.noise4.cuda()
-            else:
-                linear2_noisy = self.linear2_ + self.noise4
-
-            linear2_out = linear2_noisy
-
-            if (args.plot or args.write) and args.plot_noise:
-                arrays += ([sigmas4], [self.noise4])
+            linear2_out = add_noise_calculate_power(self, args, arrays, self.relu3, self.linear2.weight, self.linear2_, layer_type='linear', i=i, layer_num=3, merged_dac=False)
         else:
             linear2_out = self.linear2_
-            if i < 20 and args.print_stats:
-                f4 = torch.abs(self.linear2.weight)
-                a4 = F.linear(self.relu3, f4, bias=self.linear2.bias)
-                a4_sums = torch.sum(a4, dim=1)
-                x_max4 = torch.max(self.relu3)
-                self.p4 = 30 * 1.0e-6 * 1.2 * torch.mean(a4_sums) / x_max4
 
         if args.batchnorm and args.bn4 and not args.merge_bn:
             self.linear2_out = self.bn4(linear2_out)
@@ -857,12 +624,11 @@ class Net(nn.Module):
             info = []
             inputs = [np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]),
                       np.prod(self.linear2.weight.shape[1:])]
-            power = [self.p1.item(), self.p2.item(), self.p3.item(), self.p4.item()]
             for i in range(len(inputs)):
                 temp = []
                 temp.append('{:d} inputs '.format(inputs[i]))
                 if args.plot_power:
-                    temp.append('{:.2f}mW '.format(power[i]))
+                    temp.append('{:.2f}mW '.format(self.power[i]))
                 info.append(temp)
 
             if args.plot:
@@ -881,7 +647,7 @@ class Net(nn.Module):
                 np.save(args.checkpoint_dir + 'input_sizes.npy', np.array(inputs))
                 print('input sizes saved to', args.checkpoint_dir + 'input_sizes.npy', '\n\n')
                 if args.plot_power:
-                    np.save(args.checkpoint_dir + 'layer_power.npy', np.array(power))
+                    np.save(args.checkpoint_dir + 'layer_power.npy', np.array(self.power))
                     print('layers power saved to', args.checkpoint_dir + 'layers_power.npy', '\n\n')
 
             if (args.plot and args.resume is not None) or args.write:
@@ -925,6 +691,8 @@ for current in current_vars:
         args.train_current = 0
         #args.train_current = current * 0.8
         args.current1 = args.current2 = args.current3 = args.current4 = args.train_current
+
+    args.layer_currents = [args.current1, args.current2, args.current3, args.current4]
 
     if args.distort_w_test or args.distort_w_train:
         if args.current1 > 0:
@@ -1087,10 +855,6 @@ for current in current_vars:
         best_noises = []
         best_act_sparsities = []
         best_w_sparsities = []
-        nsr1 = nsr2 = nsr3 = nsr4 = 0
-        avg_nsr1 = avg_nsr2 = avg_nsr3 = avg_nsr4 = avg_nsr = 0
-        avg_relu1_sp = avg_relu2_sp = avg_relu3_sp = 0
-        avg_p1 = avg_p2 = avg_p3 = avg_p4 = 0
         te_acc_dist_string = ''
         avg_te_acc_dist = 0
         create_dir = True
@@ -1109,12 +873,29 @@ for current in current_vars:
 
         for s in range(args.num_sim):
 
+            best_accuracy = 0
+            best_accuracy_dist = 0
+            best_epoch = 0
+            best_power = 0
+            best_nsr = 0
+            best_input_sparsity = 0
+            avg_w_sparsity = 0
+            best_w_sparsity = 0
+            init_epoch = 0
+            te_acc = 0
+            best_power_string = ''
+            best_noise_string = ''
+            best_input_sparsity_string = ''
+            best_w_sparsity_string = ''
+            w_input_sparsity_string = ''
+            input_sparsity_string = ''
+            noise_string = ''
+            power_string = ''
             saved = False
 
             if args.resume is None:
 
                 model = Net(args=args)
-                model.p1 = model.p2 = model.p3 = model.p4 = 0
                 utils.init_model(model, args, s)
                 model = model.cuda() #do this before constructing optimizer!!
                 if args.fp16:
@@ -1127,23 +908,6 @@ for current in current_vars:
                 if args.train_w_max:
                     print('\n\nSetting w_min1 to {:.2f} and w_max1 to {:.2f}\n\n'.format(model.w_min1.item(), model.w_max1.item()))
 
-                best_accuracy = 0
-                best_accuracy_dist = 0
-                best_epoch = 0
-                best_power = 0
-                best_nsr = 0
-                best_act_sparsity = 0
-                avg_w_sparsity = 0
-                best_w_sparsity = 0
-                init_epoch = 0
-                te_acc = 0
-                best_power_string = ''
-                best_noise_string = ''
-                best_act_sparsity_string = ''
-                w_act_sparsity_string = ''
-                act_sparsity_string = ''
-                noise_string = ''
-                power_string = ''
                 if args.train_w_max:
                     w_max_values = []
                     w_min_values = []
@@ -1184,64 +948,18 @@ for current in current_vars:
                 model.eval()
 
                 if args.merge_bn:
-                    print('\n\nMerging batchnorm into weights:\n')
-                    #scale1 = model.bn1.weight.data.view(-1, 1, 1, 1) / torch.sqrt(model.bn1.running_var.data.view(-1, 1, 1, 1) + 0.0000001)
-                    bn1_weights = model.bn1.weight
-                    bn1_biases = model.bn1.bias
-                    bn1_run_var = model.bn1.running_var
-                    bn1_run_mean = model.bn1.running_mean
-                    bn1_scale = bn1_weights.data.view(-1, 1, 1, 1) / torch.sqrt(bn1_run_var.data.view(-1, 1, 1, 1) + 0.0000001)
-                    print('\nconv1 bn1.weight\n', bn1_weights.detach().cpu().numpy())
-                    print('\nconv1 bn1.bias\n', bn1_biases.detach().cpu().numpy())
-                    print('\nconv1 bn1 run_vars\n', bn1_run_var.detach().cpu().numpy())
-                    print('\nbn1 run_means\n', bn1_run_mean.detach().cpu().numpy())
-                    print('\nconv1 bn1 scale\n', bn1_scale.view(-1).detach().cpu().numpy())
-                    model.conv1.weight.data *= bn1_scale  #(64,3,5,5) x (64)
-
-                    bn2_weights = model.bn2.weight
-                    bn2_biases = model.bn2.bias
-                    bn2_run_var = model.bn2.running_var
-                    bn2_run_mean = model.bn2.running_mean
-                    bn2_scale = bn2_weights.data.view(-1, 1, 1, 1) / torch.sqrt(bn2_run_var.data.view(-1, 1, 1, 1) + 0.0000001)
-                    print('\nconv2 bn2.weight\n', bn2_weights.detach().cpu().numpy())
-                    print('\nconv1 bn2.bias\n', bn2_biases.detach().cpu().numpy())
-                    print('\nconv2 bn2 run_vars\n', bn2_run_var.detach().cpu().numpy())
-                    print('\nbn2 run_means\n', bn2_run_mean.detach().cpu().numpy())
-                    print('\nconv2 bn2 scale\n', bn2_scale.view(-1).detach().cpu().numpy())
-                    model.conv2.weight.data *= bn2_scale
-
-                    bn3_weights = model.bn3.weight
-                    bn3_biases = model.bn3.bias
-                    bn3_run_var = model.bn3.running_var
-                    bn3_run_mean = model.bn3.running_mean
-                    bn3_scale = bn3_weights.data.view(-1, 1) / torch.sqrt(bn3_run_var.data.view(-1, 1) + 0.0000001)
-                    print('\nbn3.weight\n', bn3_weights.detach().cpu().numpy())
-                    print('\nbn3.bias\n', bn3_biases.detach().cpu().numpy())
-                    print('\nbn3 run_vars\n', bn3_run_var.detach().cpu().numpy())
-                    print('\nbn3 run_means\n', bn3_run_mean.detach().cpu().numpy())
-                    print('\nbn3 scale\n', bn3_scale.view(-1).detach().cpu().numpy())
-                    model.linear1.weight.data *= bn3_scale
-
-                    bn4_weights = model.bn4.weight
-                    bn4_biases = model.bn4.bias
-                    bn4_run_var = model.bn4.running_var
-                    bn4_run_mean = model.bn4.running_mean
-                    bn4_scale = bn4_weights.data.view(-1, 1) / torch.sqrt(bn4_run_var.data.view(-1, 1) + 0.0000001)
-                    print('\nbn4.weight\n', bn4_weights.detach().cpu().numpy())
-                    print('\nbn4.bias\n', bn4_biases.detach().cpu().numpy())
-                    print('\nbn4 run_vars\n', bn4_run_var.detach().cpu().numpy())
-                    print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
-                    print('\nbn4 scale\n', bn4_scale.view(-1).detach().cpu().numpy())
-                    model.linear2.weight.data *= bn4_scale
-
-                te_accs = []
+                    merge_batchnorm(model, args)
 
                 model_fname = args.resume.split('/')[-1]
                 init_epoch = int(model_fname.split('_')[2])
                 init_acc = model_fname.split('_')[-1][:-4]
                 print('\n\nCurrents:', args.current1, args.current2, args.current3, args.current4)
-                random.seed(args.seed)
-                torch.manual_seed(args.seed)
+
+                model.power = [[] for _ in range(args.num_layers)]  #[[]]*num_layers won't work!
+                model.nsr = [[] for _ in range(args.num_layers)]
+                model.input_sparsity = [[] for _ in range(args.num_layers)]
+                w_sparsity = []
+                te_accs = []
 
                 for i in range(10000 // args.batch_size):
                     input = test_inputs[i * args.batch_size:(i + 1) * args.batch_size]
@@ -1250,13 +968,26 @@ for current in current_vars:
                     pred = output.data.max(1)[1]
                     te_acc = pred.eq(label.data).cpu().sum().numpy() * 100.0 / args.batch_size
                     te_accs.append(te_acc)
+
+                if args.print_stats:
+                    p = []
+                    input_sp = []
+                    nsr = []
+                    for ind in range(args.num_layers):
+                        p.append(np.nanmean(model.power[ind]))
+                        input_sp.append(np.nanmean(model.input_sparsity[ind]))
+                        nsr.append(np.nanmean(model.nsr[ind]))
+
+                    avg_input_sparsity = np.nanmean(input_sp)
+                    input_sparsity_string = '  act spars {:.2f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_input_sparsity, *input_sp)
+                    avg_nsr = np.nanmean(nsr)
+                    noise_string = '  avg noise {:.3f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_nsr, *nsr)
+                    total_power = np.nansum(p)
+                    power_string = '  Power {:.2f}mW ({:.2f} {:.2f} {:.2f} {:.2f})'.format(total_power, *p)
+
                 te_acc = np.mean(te_accs)
-                if args.current > 0:
-                    total_power = (model.p1 + model.p2 + model.p3 + model.p4).item()
-                    power_string = '  Power {:.2f}mW ({:.2f} {:.2f} {:.2f} {:.2f})'.format(total_power, model.p1, model.p2, model.p3, model.p4)
-                else:
-                    power_string = ''
-                print('\n\nRestored Model Accuracy (epoch {:d}): {:.2f}{}\n\n'.format(init_epoch, te_acc, power_string))
+
+                print('\n\nRestored Model Accuracy (epoch {:d}): {:.2f}{}{}{}\n\n'.format(init_epoch, te_acc, power_string, noise_string, input_sparsity_string))
                 best_accuracy = te_acc
                 best_epoch = init_epoch
                 create_dir = False
@@ -1366,43 +1097,25 @@ for current in current_vars:
             act_grad_norms = []
             act_norms = []
             weight_norms = []
+            w_sparsity = []
             max_weights = []
             max_acts = []
             max_grads = []
             max_act_grads = []
-            '''
-            if args.L3_act == 0:
-                act_grad_norms = [0, 0, 0, 0]
-            if args.L3 == 0:
-                grad_norms = [0, 0, 0, 0]
-                '''
             best_accuracy_dist_string = ''
             norm_string = ''
             max_string = ''
 
             for epoch in range(args.nepochs):
+
+                model.power = [[] for _ in range(args.num_layers)]
+                model.nsr = [[] for _ in range(args.num_layers)]
+                model.input_sparsity = [[] for _ in range(args.num_layers)]
+
                 model.train()
                 tr_accuracies = []
                 te_accuracies = []
                 te_accuracies_dist = []
-                tr_losses = []
-                te_losses = []
-                p1s = []
-                p2s = []
-                p3s = []
-                p4s = []
-
-                relu1_sps = []
-                relu2_sps = []
-                relu3_sps = []
-
-                w_sparsity = []
-
-                nsr1s = []
-                nsr2s = []
-                nsr3s = []
-                nsr4s = []
-                avg_nsrs = []
 
                 if args.LR_scheduler == 'manual':
                     lr = args.LR * args.LR_step ** (epoch // args.LR_step_after)
@@ -1421,6 +1134,7 @@ for current in current_vars:
 
                 if args.split:
                     args.current1 = args.current2 = args.current3 = args.current4 = args.train_current
+                    args.layer_currents = [args.current1, args.current2, args.current3, args.current4]
 
                     if epoch == 0:
                         print('*********************** Setting Train Current to', args.train_current, 'currents:', args.current1, args.current2, args.current3, args.current4)
@@ -1447,45 +1161,8 @@ for current in current_vars:
                     #loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
                     loss = nn.CrossEntropyLoss()(output, label)
 
-                    if args.debug:
-                        print('\n\nIteration', i, '\n\n')
-                        bn1_weights = model.bn1.weight
-                        bn1_biases = model.bn1.bias
-                        bn1_run_var = model.bn1.running_var
-                        bn1_run_mean = model.bn1.running_mean
-                        print('\nconv1 bn1.weight\n', bn1_weights.detach().cpu().numpy())
-                        print('\nconv1 bn1.bias\n', bn1_biases.detach().cpu().numpy())
-                        print('\nconv1 bn1 run_vars\n', bn1_run_var.detach().cpu().numpy())
-                        print('\nbn1 run_means\n', bn1_run_mean.detach().cpu().numpy())
-
-                        bn2_weights = model.bn2.weight
-                        bn2_biases = model.bn2.bias
-                        bn2_run_var = model.bn2.running_var
-                        bn2_run_mean = model.bn2.running_mean
-                        print('\nconv2 bn2.weight\n', bn2_weights.detach().cpu().numpy())
-                        print('\nconv1 bn2.bias\n', bn2_biases.detach().cpu().numpy())
-                        print('\nconv2 bn2 run_vars\n', bn2_run_var.detach().cpu().numpy())
-                        print('\nbn2 run_means\n', bn2_run_mean.detach().cpu().numpy())
-
-                        bn3_weights = model.bn3.weight
-                        bn3_biases = model.bn3.bias
-                        bn3_run_var = model.bn3.running_var
-                        bn3_run_mean = model.bn3.running_mean
-                        print('\nbn3.weight\n', bn3_weights.detach().cpu().numpy())
-                        print('\nbn3.bias\n', bn3_biases.detach().cpu().numpy())
-                        print('\nbn3 run_vars\n', bn3_run_var.detach().cpu().numpy())
-                        print('\nbn3 run_means\n', bn3_run_mean.detach().cpu().numpy())
-
-                        bn4_weights = model.bn4.weight
-                        bn4_biases = model.bn4.bias
-                        bn4_run_var = model.bn4.running_var
-                        bn4_run_mean = model.bn4.running_mean
-                        print('\nbn4.weight\n', bn4_weights.detach().cpu().numpy())
-                        print('\nbn4.bias\n', bn4_biases.detach().cpu().numpy())
-                        print('\nbn4 run_vars\n', bn4_run_var.detach().cpu().numpy())
-                        print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
-                        if i != 0:
-                            print('\nbn4.weight gradients\n', bn4_weights.grad.detach().cpu().numpy())
+                    if args.debug and i < 5:
+                        utils.print_batchnorm(model, i)
 
                     if args.LR_scheduler == 'triangle':
                         if epoch <= args.LR_max_epoch:
@@ -1768,6 +1445,7 @@ for current in current_vars:
                 model.eval()
                 if args.split:
                     args.current1 = args.current2 = args.current3 = args.current4 = args.test_current
+                    args.layer_currents = [args.current1, args.current2, args.current3, args.current4]
                     if epoch == 0:
                         print('*********************** Setting Test Current to', args.test_current, 'currents:', args.current1, args.current2, args.current3, args.current4)
 
@@ -1783,56 +1461,21 @@ for current in current_vars:
                         te_acc = pred.eq(label.data).cpu().sum().numpy() * 100.0 / args.batch_size
                         te_accuracies.append(te_acc)
 
-                        if args.print_stats:
-                            if i < 20:
-                                if args.current1 > 0:  #nsr is averaged over the first 20 batches
-                                    nsr1 = torch.mean(torch.abs(model.noise1) / torch.max(model.conv1_)).item()
-                                    nsr1s.append(nsr1)
-                                if args.current2 > 0:
-                                    nsr2 = torch.mean(torch.abs(model.noise2) / torch.max(model.conv2_)).item()
-                                    nsr2s.append(nsr2)
-                                if args.current3 > 0:
-                                    nsr3 = torch.mean(torch.abs(model.noise3) / torch.max(model.linear1_)).item()
-                                    nsr3s.append(nsr3)
-                                if args.current4 > 0:
-                                    nsr4 = torch.mean(torch.abs(model.noise4) / torch.max(model.linear2_)).item()
-                                    nsr4s.append(nsr4)
-
-                                input_sparsity = model.input[model.input > 0].numel() / model.input.numel()
-                                relu1_sparsity = model.relu1[model.relu1 > 0].numel() / model.relu1.numel()
-                                relu2_sparsity = model.relu2[model.relu2 > 0].numel() / model.relu2.numel()
-                                relu3_sparsity = model.relu3[model.relu3 > 0].numel() / model.relu3.numel()
-                                relu1_sps.append(relu1_sparsity)
-                                relu2_sps.append(relu2_sparsity)
-                                relu3_sps.append(relu3_sparsity)
-
-                                p1s.append(model.p1.item())
-                                p2s.append(model.p2.item())
-                                p3s.append(model.p3.item())
-                                p4s.append(model.p4.item())
-
                     if args.print_stats:
-                        avg_p1 = np.mean(p1s)
-                        avg_p2 = np.mean(p2s)
-                        avg_p3 = np.mean(p3s)
-                        avg_p4 = np.mean(p4s)
+                        p = []
+                        input_sp = []
+                        nsr = []
+                        for ind in range(args.num_layers):
+                            p.append(np.nanmean(model.power[ind]))
+                            input_sp.append(np.nanmean(model.input_sparsity[ind]))
+                            nsr.append(np.nanmean(model.nsr[ind]))
 
-                        avg_relu1_sp = np.mean(relu1_sps)
-                        avg_relu2_sp = np.mean(relu2_sps)
-                        avg_relu3_sp = np.mean(relu3_sps)
-                        avg_act_sparsity = np.mean([avg_relu1_sp, avg_relu2_sp, avg_relu3_sp])
-                        act_sparsity_string = '  act spars {:.2f} ({:.2f} {:.2f} {:.2f})'.format(avg_act_sparsity, avg_relu1_sp, avg_relu2_sp, avg_relu3_sp)
-
-                        if args.current1 > 0 or args.current2 > 0 or args.current3 > 0 or args.current4 > 0:
-                            avg_nsr1 = np.mean(nsr1s)
-                            avg_nsr2 = np.mean(nsr2s)
-                            avg_nsr3 = np.mean(nsr3s)
-                            avg_nsr4 = np.mean(nsr4s)
-                            avg_nsr = np.mean([avg_nsr1, avg_nsr2, avg_nsr3, avg_nsr4])
-                            noise_string = '  avg noise {:.3f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_nsr, avg_nsr1, avg_nsr2, avg_nsr3, avg_nsr4)
-
-                        total_power = avg_p1 + avg_p2 + avg_p3 + avg_p4
-                        power_string = '  Power {:.2f}mW ({:.2f} {:.2f} {:.2f} {:.2f})'.format(total_power, avg_p1, avg_p2, avg_p3, avg_p4)
+                        avg_input_sparsity = np.nanmean(input_sp)
+                        input_sparsity_string = '  act spars {:.2f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_input_sparsity, *input_sp)
+                        avg_nsr = np.nanmean(nsr)
+                        noise_string = '  avg noise {:.3f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_nsr, *nsr)
+                        total_power = np.nansum(p)
+                        power_string = '  Power {:.2f}mW ({:.2f} {:.2f} {:.2f} {:.2f})'.format(total_power, *p)
 
                 te_acc = np.mean(te_accuracies)
 
@@ -1910,13 +1553,10 @@ for current in current_vars:
                     avg_w_sparsity = np.mean(w_sparsity)
                     w_sparsity_string = '  w spars {:.2f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_w_sparsity, *w_sparsity)
 
-                #print('{}         Epoch {:>3d}  Train {:.2f}  Test {:.2f}{} LR {:.4f}{}{}{}{} {}'.format(
-                    #str(datetime.now())[:-7], epoch, tr_acc, te_acc, te_acc_dist_string, scheduler.get_lr()[0], clip_string, power_string, noise_string, act_q_string, norm_string_reduced))
-
                 if args.print_stats:
                     print('{}\tEpoch {:>3d}  Train {:.2f}  Test {:.2f}{}  LR {:.4f}{}{}{}{}{}{}{}'.format(
                         str(datetime.now())[:-7], epoch, tr_acc, te_acc, te_acc_dist_string, lr, clip_string, power_string,
-                        noise_string, w_sparsity_string, act_sparsity_string, act_q_string, norm_string_reduced))
+                        noise_string, w_sparsity_string, input_sparsity_string, act_q_string, norm_string_reduced))
                 else:
                     print('{}\tEpoch {:>3d}  Train {:.2f}  Test {:.2f}  LR {:.4f}'.format(str(datetime.now())[:-7], epoch, tr_acc, te_acc, lr))
 
@@ -1928,7 +1568,7 @@ for current in current_vars:
                     if saved:
                         os.remove(args.checkpoint_dir + '/model_epoch_{:d}_acc_{:.2f}.pth'.format(best_epoch, saved_accuracy))
 
-                    if epoch > init_epoch + 100:
+                    if epoch > init_epoch + 10:
                         if create_dir:
                             utils.saveargs(args)
                             create_dir = False
@@ -1943,11 +1583,11 @@ for current in current_vars:
                     best_epoch = epoch
                     if args.print_stats:
                         best_nsr = avg_nsr
-                        best_act_sparsity = avg_act_sparsity
+                        best_input_sparsity = avg_input_sparsity
                         best_w_sparsity = avg_w_sparsity
                         best_power_string = power_string
                         best_noise_string = noise_string
-                        best_act_sparsity_string = act_sparsity_string
+                        best_input_sparsity_string = input_sparsity_string
                         best_w_sparsity_string = w_sparsity_string
                         best_accuracy_dist_string = te_acc_dist_string
                         best_power = total_power
@@ -1962,12 +1602,12 @@ for current in current_vars:
             best_accuracies.append(best_accuracy)
             if args.print_stats:
                 print('\n\nCurrent {}  {} {}  Simulation {:d} Best Accuracy: {:.2f}{} (epoch {:d}){}{}{}\n\n'.format(
-                    args.current1, args.var_name, var, s, best_accuracy, best_accuracy_dist_string, best_epoch, best_power_string, best_noise_string, best_w_sparsity_string, best_act_sparsity_string))
+                    args.current1, args.var_name, var, s, best_accuracy, best_accuracy_dist_string, best_epoch, best_power_string, best_noise_string, best_w_sparsity_string, best_input_sparsity_string))
 
                 best_accuracies_dist.append(best_accuracy_dist)
                 best_powers.append(best_power)
                 best_noises.append(best_nsr)
-                best_act_sparsities.append(best_act_sparsity)
+                best_act_sparsities.append(best_input_sparsity)
                 best_w_sparsities.append(best_w_sparsity)
 
             if args.train_w_max:
@@ -2009,7 +1649,7 @@ for current in current_vars:
             fmt = '{} {}  {} ({}) mean {:.2f} ({:.2f})  max {:.2f}  min {:.2f}  w spars {:.2f}{}  act spars {:.2f}{}  power {:.2f}mW{}  noise {}  mean {:.3f}'.format(
                 args.var_name, str(var), [float('{:.2f}'.format(x)) for x in results[var]], [float('{:.2f}'.format(x)) for x in results_dist[var]],
                 np.mean(results[var]), np.mean(results_dist[var]), np.max(results[var]), np.min(results[var]), np.mean(w_sparsity_results[var]), best_w_sparsity_string,
-                np.mean(act_sparsity_results[var]), best_act_sparsity_string, np.mean(power_results[var]), best_power_string, [float('{:.2f}'.format(x)) for x in noise_results[var]],
+                np.mean(act_sparsity_results[var]), best_input_sparsity_string, np.mean(power_results[var]), best_power_string, [float('{:.2f}'.format(x)) for x in noise_results[var]],
                 np.mean(noise_results[var]))
         else:
             if args.current1 > 0 or args.current2 > 0 or args.current3 > 0 or args.current4 > 0:
@@ -2019,7 +1659,7 @@ for current in current_vars:
 
                 fmt = '{} {}  {} mean {:.2f}  max {:.2f}  min {:.2f}  w spars {:.2f}{}  act spars {:.2f}{}  power {:.2f}mW{}  noise {}  mean {:.3f}'.format(
                     args.var_name, str(var), [float('{:.2f}'.format(x)) for x in results[var]], np.mean(results[var]), np.max(results[var]), np.min(results[var]),
-                    np.mean(w_sparsity_results[var]), best_w_sparsity_string, np.mean(act_sparsity_results[var]), best_act_sparsity_string,
+                    np.mean(w_sparsity_results[var]), best_w_sparsity_string, np.mean(act_sparsity_results[var]), best_input_sparsity_string,
                     np.mean(power_results[var]), best_power_string, [float('{:.2f}'.format(x)) for x in noise_results[var]], np.mean(noise_results[var]))
 
             else:
@@ -2031,7 +1671,7 @@ for current in current_vars:
                 fmt = '{} {}  {} mean {:.2f}  max {:.2f}  min {:.2f}  w spars {:.2f}{}  act spars {:.2f}{}  power {:.2f}mW{}'.format(
                     args.var_name, str(var), [float('{:.2f}'.format(x)) for x in results[var]], np.mean(results[var]), np.max(results[var]),
                     np.min(results[var]), np.mean(w_sparsity_results[var]), best_w_sparsity_string, np.mean(act_sparsity_results[var]),
-                    best_act_sparsity_string, np.mean(power_results[var]), best_power_string)
+                    best_input_sparsity_string, np.mean(power_results[var]), best_power_string)
                 '''
                 print('\n\nBest accuracies for {} {} {}\n\n'.format(args.var_name, var, ['{:.2f}'.format(x) for x in best_accuracies]))
 

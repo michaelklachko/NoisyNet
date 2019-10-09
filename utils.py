@@ -336,3 +336,43 @@ def print_values(x, noise, y, unique_masks, n=2):
     print('masks: {} image1, channel0, mask1:  {}'.format(list(y.size()), y.data[1, 0, 1, 0, :n].cpu().numpy()))
     print('masks: {} image1, channel1, mask0:  {}'.format(list(y.size()), y.data[1, 1, 0, 0, :n].cpu().numpy()))
     print('masks: {} image1, channel1, mask1:  {}'.format(list(y.size()), y.data[1, 1, 1, 0, :n].cpu().numpy()))
+
+def print_batchnorm(model, i):
+    print('\n\nIteration', i, '\n\n')
+    bn1_weights = model.bn1.weight
+    bn1_biases = model.bn1.bias
+    bn1_run_var = model.bn1.running_var
+    bn1_run_mean = model.bn1.running_mean
+    print('\nconv1 bn1.weight\n', bn1_weights.detach().cpu().numpy())
+    print('\nconv1 bn1.bias\n', bn1_biases.detach().cpu().numpy())
+    print('\nconv1 bn1 run_vars\n', bn1_run_var.detach().cpu().numpy())
+    print('\nbn1 run_means\n', bn1_run_mean.detach().cpu().numpy())
+
+    bn2_weights = model.bn2.weight
+    bn2_biases = model.bn2.bias
+    bn2_run_var = model.bn2.running_var
+    bn2_run_mean = model.bn2.running_mean
+    print('\nconv2 bn2.weight\n', bn2_weights.detach().cpu().numpy())
+    print('\nconv1 bn2.bias\n', bn2_biases.detach().cpu().numpy())
+    print('\nconv2 bn2 run_vars\n', bn2_run_var.detach().cpu().numpy())
+    print('\nbn2 run_means\n', bn2_run_mean.detach().cpu().numpy())
+
+    bn3_weights = model.bn3.weight
+    bn3_biases = model.bn3.bias
+    bn3_run_var = model.bn3.running_var
+    bn3_run_mean = model.bn3.running_mean
+    print('\nbn3.weight\n', bn3_weights.detach().cpu().numpy())
+    print('\nbn3.bias\n', bn3_biases.detach().cpu().numpy())
+    print('\nbn3 run_vars\n', bn3_run_var.detach().cpu().numpy())
+    print('\nbn3 run_means\n', bn3_run_mean.detach().cpu().numpy())
+
+    bn4_weights = model.bn4.weight
+    bn4_biases = model.bn4.bias
+    bn4_run_var = model.bn4.running_var
+    bn4_run_mean = model.bn4.running_mean
+    print('\nbn4.weight\n', bn4_weights.detach().cpu().numpy())
+    print('\nbn4.bias\n', bn4_biases.detach().cpu().numpy())
+    print('\nbn4 run_vars\n', bn4_run_var.detach().cpu().numpy())
+    print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
+    if i != 0:
+        print('\nbn4.weight gradients\n', bn4_weights.grad.detach().cpu().numpy())
