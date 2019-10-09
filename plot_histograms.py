@@ -12,9 +12,13 @@ import torch.nn.functional as F
 def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv', basic=False, debug=False):
     print('Input:', list(input.shape), 'weights:', list(weight.shape), 'layer type:', layer)
     with torch.no_grad():
+        print('\n\nLayer:', layer)
         arrays.append([input.half()])
+        print('adding input, len(arrays):', len(arrays))
         arrays.append([weight.half()])
+        print('adding weights, len(arrays):', len(arrays))
         arrays.append([output.half()])
+        print('adding vmms, len(arrays):', len(arrays))
 
         if basic:
             return
@@ -262,7 +266,7 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
             for l in range(num_layers):
                 for col in range(len(model_layers[l])):
                     layers[l][col].append(model_layers[l][col][0])
-
+                '''
                 if 'noise' in names:  # add noise/signal ratio array to each layer, if noise present
                     out = model_layers[l][2][0]  # TODO fix this fragility
                     noise = model_layers[l][-1][0]  # assume vmm out to be 3rd array in layer and noise last array:
@@ -274,6 +278,7 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
                     print('Layer {:d}  pre-act range: clipped (99th-1st pctl)/full {:>5.1f}/{:>5.1f}  error range {:.2f}-{:.2f}'.format(
                         l, clipped_range, full_range, np.min(error), np.max(error)))
                     layers[l][-1].append(error)
+                '''
 
         for lr in range(len(inputs[0])):
             info = []

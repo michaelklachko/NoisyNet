@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import random
+import numpy as np
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from torch.distributions.uniform import Uniform
@@ -10,7 +11,7 @@ from torch.distributions.uniform import Uniform
 #torch.backends.cudnn.deterministic = True
 
 def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_type='conv', i=0, layer_num=0, merged_dac=True):
-    merged_dac = False
+    merged_dac = True
     with torch.no_grad():
         if (args.uniform_ind > 0 and self.training) or (args.uniform_ind > 0 and args.noise_test):
             sigmas = torch.ones_like(output) * args.uniform_ind * torch.max(torch.abs(output))
@@ -47,9 +48,6 @@ def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_
                     sample_sums = torch.sum(sigmas, dim=dim)
                     p = 1.0e-6 * 1.2 * args.layer_currents[layer_num] * torch.mean(sample_sums) / (input_max * w_max)
 
-                    if (args.plot or args.write) and args.plot_power:
-                        arrays.append([(sigmas / (input_max * w_max)).half()])
-
                 noise_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (w_max / args.layer_currents[layer_num]) * sigmas))
 
             else:  # external DAC (for the next gen hardware) or analog input in the current chip (layers 2 and 4)
@@ -65,15 +63,12 @@ def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_
                     sigmas_w_squared = F.linear(input, abs_w_squared, bias=None)
                     dim = 1
 
-                    if i < 20:  # calcuate power consumption
+                    if i < 20:
                         sigmas = F.linear(input, abs_weights, bias=None)
 
                 if i < 20:
                     sample_sums = torch.sum(sigmas, dim=dim)
                     p = 1.0e-6 * 1.2 * args.layer_currents[layer_num] * torch.mean(sample_sums) / input_max
-
-                    if (args.plot or args.write) and args.plot_power:
-                        arrays.append([(sigmas / input_max).half()])
 
                 noise_distr = Normal(loc=0, scale=torch.sqrt(0.1 * (input_max / args.layer_currents[layer_num]) * sigmas_w_squared))
 
@@ -84,11 +79,37 @@ def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_
                 self.nsr[layer_num].append(torch.mean(torch.abs(noise) / torch.max(output)).item())
                 self.input_sparsity[layer_num].append(input[input > 0].numel() / input.numel())
 
-    if (args.plot or args.write) and args.plot_noise:
+    if (args.plot or args.write):
         if merged_dac:
-            arrays += ([sigmas], [noise])
+            if args.plot_noise:
+                arrays += ([sigmas.half()], [noise.half()])
+
+                clipped_range = np.percentile(output.detach().cpu().numpy(), 99) - np.percentile(output.detach().cpu().numpy(), 1)
+                if clipped_range == 0:
+                    print('\n\n***** np.percentile(output, 99) = np.percentile(output, 1) *****\n\n')
+                    raise(SystemExit)
+                    #clipped_range = max(np.max(output) / 100., 1)
+                nsr = noise / clipped_range
+                arrays.append([nsr.half()])
+
+                print('adding sigmas and noise and snr, len(arrays):', len(arrays))
+            if args.plot_power:
+                arrays.append([(sigmas / (input_max * w_max)).half()])
+                print('adding power, len(arrays):', len(arrays))
         else:
-            arrays += ([sigmas_w_squared], [noise])
+            if args.plot_noise:
+                arrays += ([sigmas_w_squared.half()], [noise.half()])
+
+                clipped_range = np.percentile(output.detach().cpu().numpy(), 99) - np.percentile(output.detach().cpu().numpy(), 1)
+                if clipped_range == 0:
+                    print('\n\n***** np.percentile(output, 99) = np.percentile(output, 1) *****\n\n')
+                    raise (SystemExit)
+                    # clipped_range = max(np.max(output) / 100., 1)
+                nsr = noise / clipped_range
+                arrays.append([nsr.half()])
+
+            if args.plot_power:
+                arrays.append([(sigmas / input_max).half()])
 
     if (args.uniform_dep > 0 and self.training) or (args.uniform_dep > 0 and args.noise_test):
         noisy_out = output * noise.cuda()

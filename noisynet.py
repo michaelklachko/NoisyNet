@@ -2,8 +2,6 @@ import torch
 from torch import nn
 from torch.optim import lr_scheduler
 import torch.nn.functional as F
-from torch.distributions.normal import Normal
-from torch.distributions.uniform import Uniform
 
 import random
 import os
@@ -622,13 +620,16 @@ class Net(nn.Module):
                 layer = []
 
             info = []
-            inputs = [np.prod(self.conv1.weight.shape[1:]), np.prod(self.conv2.weight.shape[1:]), np.prod(self.linear1.weight.shape[1:]),
-                      np.prod(self.linear2.weight.shape[1:])]
+            inputs = []
+            for n, p in model.named_parameters():
+                if 'weight' in n and ('conv' in n or 'linear' in n):
+                    inputs.append(np.prod(p.shape[1:]))
+
             for i in range(len(inputs)):
                 temp = []
                 temp.append('{:d} inputs '.format(inputs[i]))
                 if args.plot_power:
-                    temp.append('{:.2f}mW '.format(self.power[i]))
+                    temp.append('{:.2f}mW '.format(self.power[i][0]))
                 info.append(temp)
 
             if args.plot:
@@ -647,7 +648,7 @@ class Net(nn.Module):
                 np.save(args.checkpoint_dir + 'input_sizes.npy', np.array(inputs))
                 print('input sizes saved to', args.checkpoint_dir + 'input_sizes.npy', '\n\n')
                 if args.plot_power:
-                    np.save(args.checkpoint_dir + 'layer_power.npy', np.array(self.power))
+                    np.save(args.checkpoint_dir + 'layer_power.npy', np.array([x[0] for x in self.power]))
                     print('layers power saved to', args.checkpoint_dir + 'layers_power.npy', '\n\n')
 
             if (args.plot and args.resume is not None) or args.write:
@@ -922,13 +923,6 @@ for current in current_vars:
                 model = Net(args=args)
                 model = model.cuda()
 
-                if args.fp16:
-                    model = model.half()
-                    if args.keep_bn_fp32:
-                        for layer in model.modules():
-                            if isinstance(layer, nn.BatchNorm2d) or isinstance(layer, nn.BatchNorm1d):
-                                layer.float()
-
                 saved_model = torch.load(args.resume)  #ignore unnecessary parameters
 
                 for saved_name, saved_param in saved_model.items():
@@ -944,6 +938,13 @@ for current in current_vars:
                         model.load_state_dict(m)
 
                 #model.load_state_dict(torch.load(args.resume))
+
+                if args.fp16:
+                    model = model.half()
+                    if args.keep_bn_fp32:
+                        for layer in model.modules():
+                            if isinstance(layer, nn.BatchNorm2d) or isinstance(layer, nn.BatchNorm1d):
+                                layer.float()
 
                 model.eval()
 
