@@ -1243,7 +1243,7 @@ for current in current_vars:
                         grad_norm = 0
                         for grad in param_grads:
                             # print('param_grad {}:\n{}\ngrad.pow(2).mean(): {:.4f}'.format(grad.shape, grad[0,0], grad.pow(2).mean().item()))
-                            grad_norm += args.L3_new * grad.pow(2).mean()
+                            grad_norm += args.L3_new * grad.pow(2).sum()#.mean()
                         # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
                         # grad_norm.backward(retain_graph=False)  # or like this:
                         # print('loss {:.4f} grad_norm {:.4f}'.format(loss.item(), grad_norm.item()))
