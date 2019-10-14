@@ -13,7 +13,7 @@ import utils
 from misc_code.quant_orig import QConv2d, QLinear, QuantMeasure
 from plot_histograms import plot_layers, get_layers
 from hardware_model import add_noise_calculate_power
-from main import merge_batchnorm
+from main import merge_batchnorm, distort_weights, test_distortion
 
 #CUDA_LAUNCH_BLOCKING=1
 
@@ -195,6 +195,7 @@ parser.add_argument('--current1', type=float, default=0.0, metavar='', help='cur
 parser.add_argument('--current2', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current3', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--current4', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
+parser.add_argument('--noise', type=float, default=0.0, metavar='', help='magnitude of noise to add to weights or activations, e.g. noise=0.02 is equivalent to adding 2% noise')
 parser.add_argument('--train_current', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--test_current', type=float, default=0.0, metavar='', help='current level in nano Amps, which determines the noise level. 0 disables noise')
 parser.add_argument('--act_max', type=float, default=0.0, metavar='', help='max value for ReLU act (clipping upper bound)')
@@ -214,7 +215,7 @@ parser.add_argument('--dropout_conv', type=float, default=0.0, metavar='', help=
 # ======================== Training Settings =======================================
 parser.add_argument('--batch_size', type=int, default=64, metavar='', help='batch size for training')
 parser.add_argument('--nepochs', type=int, default=250, metavar='', help='number of epochs to train')
-parser.add_argument('--num_sim', type=int, default=1, metavar='', help='number of simulation runs')
+parser.add_argument('--num_sims', type=int, default=1, metavar='', help='number of simulation runs')
 parser.add_argument('--num_layers', type=int, default=4, metavar='', help='number of layers')
 parser.add_argument('--fs', type=int, default=5, metavar='', help='filter size')
 parser.add_argument('--fm1', type=int, default=65, metavar='', help='number of feature maps in the first layer')
@@ -872,7 +873,7 @@ for current in current_vars:
             'grad_clip-' + str(args.grad_clip) + '_' +
             datetime.now().strftime('%Y-%m-%d_%H-%M-%S/'))
 
-        for s in range(args.num_sim):
+        for s in range(args.num_sims):
 
             best_accuracy = 0
             best_accuracy_dist = 0
@@ -1012,6 +1013,9 @@ for current in current_vars:
                     print('\n\nFraction of clipped first layer weights: {:.2f}%\n\n'.format(fraction))
 
                 if args.distort_w_test:
+                    test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    raise(SystemExit)
+                    '''
                     print('\n\nDistorting weights\n\n')
                     model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
                     model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
@@ -1027,7 +1031,8 @@ for current in current_vars:
                         te_accs.append(te_acc)
                     te_acc = np.mean(te_accs)
                     print('\n\nRestored Model Accuracy after weights distortion {:.2f}\n\n'.format(te_acc))
-                raise (SystemExit)
+                    raise (SystemExit)
+                    '''
 
             if s == 0:
                 utils.print_model(model, args)
@@ -1481,6 +1486,9 @@ for current in current_vars:
                 te_acc = np.mean(te_accuracies)
 
                 if args.distort_w_test:
+                    avg_te_acc_dist = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)
+                    """
                     te_acc_dists = []
                     orig_params = []
 
@@ -1495,10 +1503,13 @@ for current in current_vars:
                     for _ in range(5):
                         te_accuracies_dist = []
                         with torch.no_grad():
+                            '''
                             model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
                             model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
                             model.linear1.weight.data.add_(torch.cuda.FloatTensor(model.linear1.weight.size()).uniform_(-margin3, margin3))
                             model.linear2.weight.data.add_(torch.cuda.FloatTensor(model.linear2.weight.size()).uniform_(-margin4, margin4))
+                            '''
+                            distort_weights(model, args)
 
                             bs = 2000
                             for i in range(10000 // bs):
@@ -1531,6 +1542,7 @@ for current in current_vars:
 
                     avg_te_acc_dist = np.mean(te_acc_dists)
                     te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)
+                    """
 
                 if args.train_act_max:
                     clip_string = '  act_max {:.2f} {:.2f} {:.2f}'.format(model.act_max1.item(), model.act_max2.item(), model.act_max3.item())

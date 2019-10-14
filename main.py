@@ -209,7 +209,7 @@ def distort_weights(model, args, s=0):
     with torch.no_grad():
         for n, p in model.named_parameters():
             #print('\n\n{}\n{}\n'.format(n, p.shape))
-            if ('conv' in n or 'fc' in n or 'classifier' in n) and 'weight' in n:
+            if ('conv' in n or 'fc' in n or 'classifier' in n or 'linear' in n) and 'weight' in n:
                 if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
                     print('\n\n\nBefore: {} {}\n{}'.format(n, p.shape, p.detach().cpu().numpy()[0,0]))
                 #p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
@@ -226,60 +226,60 @@ def distort_weights(model, args, s=0):
                 pass
 
 
-def test_weights_distortion(val_loader, model, args):
-    orig_m = copy.deepcopy(model.state_dict())
+def test_distortion(model, args, val_loader=None, mode='weights'):
+    if mode == 'weights':
+        orig_m = copy.deepcopy(model.state_dict())
+        orig_m = copy.deepcopy(model.state_dict())
+    if mode == 'acts':
+        args.distort_act = True
+
     acc_d = []
-    vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
+    if args.noise > 0:
+        vars = [args.noise]
+    else:
+        vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+
     for args.noise in vars:
-        print('\n\nDistorting weights by {}%\n\n'.format(args.noise * 100))
-        te_acc_dists = []
+        print('\n\nDistorting {} by {}%'.format(mode, args.noise * 100))
+        te_acc_dist = []
 
         if args.debug:
             print('\n\nbefore:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
         for s in range(args.num_sims):
-            te_accuracies_dist = []
-            distort_weights(model, args, s=s)
-            te_acc_d = validate(val_loader, model, args)
-            #print('Sim {:d} acc {:.2f}'.format(s, te_acc_d))
-            te_accuracies_dist.append(te_acc_d.item())
-            te_acc_dist = np.mean(te_accuracies_dist)
-            te_acc_dists.append(te_acc_dist)
+            if mode == 'weights':
+                distort_weights(model, args, s=s)
+            if isinstance(val_loader, tuple):
+                inputs, labels = val_loader
+                te_accs = []
+                for i in range(10000 // args.batch_size):
+                    input = inputs[i * args.batch_size:(i + 1) * args.batch_size]
+                    label = labels[i * args.batch_size:(i + 1) * args.batch_size]
+                    output = model(input)
+                    pred = output.data.max(1)[1]
+                    te_acc = pred.eq(label.data).cpu().sum().numpy() * 100.0 / args.batch_size
+                    te_accs.append(te_acc)
+                te_acc_d = np.mean(te_accs)
+            else:
+                te_acc_d = validate(val_loader, model, args)
+
+            te_acc_dist.append(te_acc_d.item())
 
             if args.debug:
                 print('after:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
-            model.load_state_dict(orig_m)
+            if mode == 'weights':
+                model.load_state_dict(orig_m)
 
             if args.debug:
                 print('restored:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
-        avg_te_acc_dist = np.mean(te_acc_dists)
-        acc_d.append(avg_te_acc_dist)
-        print('\nNoise {:4.2f}: acc {:.2f}\n'.format(args.noise, avg_te_acc_dist))
-    print('\n\n{}\n{}\n\n\n'.format(vars, acc_d))
-
-
-def test_act_distortion(val_loader, model, args):
-    args.distort_act = True
-    acc_d = []
-    vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3, 0.4, 0.5]
-    for args.noise in vars:
-        print('\n\nDistorting activations by {}%\n\n'.format(args.noise * 100))
-        te_acc_dists = []
-
-        for s in range(args.num_sims):
-            te_accuracies_dist = []
-            te_acc_d = validate(val_loader, model, args)
-            #print('Sim {:d} acc {:.2f}'.format(s, te_acc_d))
-            te_accuracies_dist.append(te_acc_d.item())
-            te_acc_dist = np.mean(te_accuracies_dist)
-            te_acc_dists.append(te_acc_dist)
-
-        avg_te_acc_dist = np.mean(te_acc_dists)
-        acc_d.append(avg_te_acc_dist)
-        print('\nNoise {:4.2f}: acc {:.2f}\n'.format(args.noise, avg_te_acc_dist))
-    print('\n\n{}\n{}\n\n\n'.format(vars, acc_d))
+        avg_te_acc_dist = np.mean(te_acc_dist)
+        acc_d.append(np.mean(te_acc_dist))
+        print('\nNoise {:>5.2f}: acc {:>5.2f}'.format(args.noise, avg_te_acc_dist))
+    print('\n\n{}\n{}\n\n\n'.format(vars, [float('{:>5.2f}'.format(x)) for x in acc_d]))
+    if args.noise > 0:
+        return avg_te_acc_dist
 
 
 def merge_batchnorm(model, args):
@@ -726,12 +726,12 @@ def main():
         if args.merge_bn:
             merge_batchnorm(model, args)
 
-        if args.distort_w_test:
-            test_weights_distortion(val_loader, model, args)
-            raise(SystemExit)
-
-        if args.distort_act_test:
-            test_act_distortion(val_loader, model, args)
+        if args.distort_w_test or args.distort_act_test:
+            if args.distort_w_test:
+                mode = 'weights'
+            if args.distort_act_test:
+                mode = 'acts'
+            test_distortion(model, args, val_loader=val_loader, mode=mode)
             raise(SystemExit)
 
         print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
