@@ -294,10 +294,10 @@ class AddNoise(InplaceFunction):
         return grad_input, None, None, None
 
 
-class NoisyConv2d(nn.Conv2d):
+class NoisyConv2d(nn.Conv2d):   #TODO merge conv and linear layers
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,
-                 num_bits=0, num_bits_weight=None, clip=0, noise=0.5, stochastic=True, debug=False):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=False,
+                 num_bits=0, num_bits_weight=0, clip=0, noise=0.5, test_noise=0, stochastic=True, debug=False):
         super(NoisyConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
         self.num_bits = num_bits
         self.fms = out_channels
@@ -307,6 +307,7 @@ class NoisyConv2d(nn.Conv2d):
         self.num_bits_weight = num_bits_weight
         self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
         self.debug = debug
+        self.test_noise = test_noise
 
     def forward(self, input):
         if self.debug:
@@ -316,11 +317,18 @@ class NoisyConv2d(nn.Conv2d):
         else:
             qinput = input
 
-        noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
-
         noisy_bias = None
-        if self.bias is not None:
-            noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+
+        if self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or scale bn params!
+            noisy_weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+            if self.bias is not None:
+                noisy_bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+        elif self.training:
+            noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            if self.bias is not None:
+                noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+        else:
+            noisy_weight = self.weight
 
         output = F.conv2d(qinput, noisy_weight, noisy_bias, self.stride, self.padding, self.dilation, self.groups)
 
@@ -329,7 +337,7 @@ class NoisyConv2d(nn.Conv2d):
 
 class NoisyLinear(nn.Linear):
 
-    def __init__(self, in_features, out_features, bias=True, num_bits=8, num_bits_weight=None, clip=0, noise=0.5, stochastic=True, debug=False):
+    def __init__(self, in_features, out_features, bias=False, num_bits=0, num_bits_weight=0, clip=0, noise=0.5, test_noise=0, stochastic=True, debug=False):
         super(NoisyLinear, self).__init__(in_features, out_features, bias)
         self.fc_in = in_features
         self.fc_out = out_features
@@ -340,6 +348,7 @@ class NoisyLinear(nn.Linear):
         self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
         self.stochastic = stochastic
         self.debug = debug
+        self.test_noise = test_noise
 
     def forward(self, input):
         if self.debug:
@@ -350,11 +359,18 @@ class NoisyLinear(nn.Linear):
         else:
             qinput = input
 
-        noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
-
         noisy_bias = None
-        if self.bias is not None:
-            noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+
+        if self.test_noise > 0 and not self.training:
+            noisy_weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+            if self.bias is not None:
+                noisy_bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+        elif self.training:
+            noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            if self.bias is not None:
+                noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+        else:
+            noisy_weight = self.weight
 
         output = F.linear(qinput, noisy_weight, noisy_bias)
 

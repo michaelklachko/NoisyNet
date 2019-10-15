@@ -288,6 +288,7 @@ parser.add_argument('--n_w1', type=float, default=0, metavar='', help='first lay
 parser.add_argument('--n_w2', type=float, default=0, metavar='', help='sescond layer weight noise to add during training')
 parser.add_argument('--n_w3', type=float, default=0, metavar='', help='third layer weight noise to add during training')
 parser.add_argument('--n_w4', type=float, default=0, metavar='', help='fourth layer weight noise to add during training')
+parser.add_argument('--n_w_test', type=float, default=0, metavar='', help='weight noise to add during test')
 parser.add_argument('--stochastic', type=float, default=0.5, metavar='', help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
 parser.add_argument('--seed', type=int, default=None, metavar='', help='random seed')
@@ -341,7 +342,7 @@ class Net(nn.Module):
         elif args.n_w1 > 0:
             print('\n\nAdding {:.2f}% noise to conv1 layer weights\n\n'.format(int(args.n_w1*100)))
             self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=0, clip=0, noise=args.n_w1,
-                                     stochastic=args.stochastic, debug=args.debug_noise)
+                                     test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         else:
             self.conv1 = nn.Conv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias)
 
@@ -352,7 +353,7 @@ class Net(nn.Module):
         elif args.n_w2 > 0:
             print('\n\nAdding {:.2f}% noise to conv2 layer weights\n\n'.format(int(args.n_w2*100)))
             self.conv2 = NoisyConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=0,
-                                     clip=0, noise=args.n_w2, stochastic=args.stochastic, debug=args.debug_noise)
+                                     clip=0, noise=args.n_w2, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         else:
             self.conv2 = nn.Conv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias)
 
@@ -363,7 +364,7 @@ class Net(nn.Module):
         elif args.n_w3 > 0:
             print('\n\nAdding {:.2f}% noise to linear1 layer weights\n\n'.format(int(args.n_w3 * 100)))
             self.linear1 = NoisyLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=0,
-                                     clip=0, noise=args.n_w3, stochastic=args.stochastic, debug=args.debug_noise)
+                                     clip=0, noise=args.n_w3, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         else:
             self.linear1 = nn.Linear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias)
 
@@ -374,7 +375,7 @@ class Net(nn.Module):
         elif args.n_w4 > 0:
             print('\n\nAdding {:.2f}% noise to linear2 layer weights\n\n'.format(int(args.n_w4 * 100)))
             self.linear2 = NoisyLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=0,
-                                     clip=0, noise=args.n_w4, stochastic=args.stochastic, debug=args.debug_noise)
+                                     clip=0, noise=args.n_w4, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         else:
             self.linear2 = nn.Linear(args.fc * args.width, 10, bias=args.use_bias)
 
@@ -1206,6 +1207,33 @@ for current in current_vars:
                     else:
                         acc_ = 10.  #needed to pass to forward
 
+                    if args.distort_w_train:
+                        if args.debug and i == 0 and epoch == 0:
+                            print('\n\n\nWeights before distortion:\n{}\n{}\n{}\n{}\n'.format(
+                                model.conv1.weight.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.detach().cpu().numpy()[0, 0, :2],
+                                model.linear1.weight.detach().cpu().numpy()[0, :10], model.linear2.weight.detach().cpu().numpy()[0, :10]))
+                        orig_params_1 = []
+                        for n, p in model.named_parameters():
+                            if ('conv' in n or 'linear' in n) and 'weight' in n:
+                                if i == 0 and epoch == 0:
+                                    print('\n\nDistorting {} by {:d}%'.format(n, int(args.noise*100)))
+                                orig_params_1.append(p.clone())
+                                noise = p.data * p.new_empty(p.shape).uniform_(-args.noise, args.noise)
+                                p.data = p.data + noise
+                        """
+                        #model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-args.w_scale, args.w_scale))
+                        model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
+                        model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
+                        model.linear1.weight.data.add_(torch.cuda.FloatTensor(model.linear1.weight.size()).uniform_(-margin3, margin3))
+                        model.linear2.weight.data.add_(torch.cuda.FloatTensor(model.linear2.weight.size()).uniform_(-margin4, margin4))
+                        """
+                        if args.debug and i == 0 and epoch == 0:
+                            print('Weights after distortion:\n{}\n{}\n{}\n{}\n'.format(
+                                model.conv1.weight.data.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.data.detach().cpu().numpy()[0, 0, :2],
+                                model.linear1.weight.data.detach().cpu().numpy()[0, :10], model.linear2.weight.data.detach().cpu().numpy()[0, :10]))
+                        #raise(SystemExit)
+
+
                     output = model(input, epoch, i, s, acc=acc_)
                     #loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
                     loss = nn.CrossEntropyLoss()(output, label)
@@ -1448,28 +1476,24 @@ for current in current_vars:
                         print('\n\n\nWeights before update:\n{}\n{}\n{}\n{}\n'.format(
                                 model.conv1.weight.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.detach().cpu().numpy()[0, 0, :2],
                                 model.linear1.weight.detach().cpu().numpy()[0, :10], model.linear2.weight.detach().cpu().numpy()[0, :10]))
+
+                    if args.distort_w_train:
+                        inx = 0
+                        for n, p in model.named_params():
+                            if ('conv' in n or 'linear' in n) and 'weight' in n:
+                                p.data = orig_params_1[inx].data
+                                ind += 1
+                        if args.debug and i == 0 and epoch == 0:
+                            print('Weights restored before update:\n{}\n{}\n{}\n{}\n'.format(
+                                model.conv1.weight.data.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.data.detach().cpu().numpy()[0, 0, :2],
+                                model.linear1.weight.data.detach().cpu().numpy()[0, :10], model.linear2.weight.data.detach().cpu().numpy()[0, :10]))
+
                     optimizer.step()
 
                     if False and i == 0:
                         print('\n\n\nWeights after update:\n{}\n{}\n{}\n{}\n'.format(
                                 model.conv1.weight.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.detach().cpu().numpy()[0, 0, :2],
                                 model.linear1.weight.detach().cpu().numpy()[0, :10], model.linear2.weight.detach().cpu().numpy()[0, :10]))
-
-                    if args.distort_w_train:
-                        if False and i == 0:
-                            print('\n\n\nWeights before distortion:\n{}\n{}\n{}\n{}\n'.format(
-                                model.conv1.weight.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.detach().cpu().numpy()[0, 0, :2],
-                                model.linear1.weight.detach().cpu().numpy()[0, :10], model.linear2.weight.detach().cpu().numpy()[0, :10]))
-                        #model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-args.w_scale, args.w_scale))
-                        model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
-                        model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
-                        model.linear1.weight.data.add_(torch.cuda.FloatTensor(model.linear1.weight.size()).uniform_(-margin3, margin3))
-                        model.linear2.weight.data.add_(torch.cuda.FloatTensor(model.linear2.weight.size()).uniform_(-margin4, margin4))
-                        if False and i == 0:
-                            print('Weights after distortion:\n{}\n{}\n{}\n{}\n'.format(
-                                model.conv1.weight.data.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.data.detach().cpu().numpy()[0, 0, :2],
-                                model.linear1.weight.data.detach().cpu().numpy()[0, :10], model.linear2.weight.data.detach().cpu().numpy()[0, :10]))
-                        #raise(SystemExit)
 
                     if args.w_max1 > 0:
                         if args.train_w_max:
