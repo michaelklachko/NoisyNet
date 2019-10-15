@@ -211,6 +211,7 @@ parser.add_argument('--w_max4', type=float, default=0.0, metavar='', help='max v
 parser.add_argument('--grad_clip', type=float, default=0.0, metavar='', help='clip gradients if grow beyond this value')
 parser.add_argument('--dropout', type=float, default=0.0, metavar='', help='dropout parameter')
 parser.add_argument('--dropout_conv', type=float, default=0.0, metavar='', help='dropout parameter')
+parser.add_argument('--distort_act', dest='distort_act', action='store_true', help='distort activations')
 
 # ======================== Training Settings =======================================
 parser.add_argument('--batch_size', type=int, default=64, metavar='', help='batch size for training')
@@ -400,7 +401,7 @@ class Net(nn.Module):
         if epoch == 0 and i == 0 and s == 0 and self.training:
             print('conv1 out shape:', self.conv1_.shape)
 
-        if args.current1 > 0:
+        if args.current1 > 0 or args.distort_act:
             conv1_out = add_noise_calculate_power(self, args, arrays, self.input, self.conv1.weight, self.conv1_, layer_type='conv', i=i, layer_num=0, merged_dac=args.merged_dac)
         else:
             conv1_out = self.conv1_
@@ -429,10 +430,14 @@ class Net(nn.Module):
         else:
             self.relu1 = self.relu1_
 
-        self.relu1_.retain_grad()
+        if args.L3_act > 0:
+            self.relu1_.retain_grad()
+
         if args.train_act_max:
             self.relu1_clipped.retain_grad()
-        self.relu1.retain_grad()
+
+        if args.L3_act > 0:
+            self.relu1.retain_grad()
 
         if args.train_w_max:
             self.w_max1.retain_grad()
@@ -460,7 +465,7 @@ class Net(nn.Module):
         if epoch == 0 and i == 0 and s == 0 and self.training:
             print('conv2 out shape:', self.conv2_.shape)
 
-        if args.current2 > 0:
+        if args.current2 > 0 or args.distort_act:
             conv2_out = add_noise_calculate_power(self, args, arrays, self.relu1, self.conv2.weight, self.conv2_, layer_type='conv', i=i, layer_num=1, merged_dac=False)
         else:
             conv2_out = self.conv2_
@@ -489,7 +494,8 @@ class Net(nn.Module):
         else:
             self.relu2 = self.relu2_
 
-        self.relu2.retain_grad()
+        if args.L3_act > 0:
+            self.relu2.retain_grad()
 
         if args.dropout > 0:
             self.relu2 = self.dropout(self.relu2)
@@ -514,7 +520,7 @@ class Net(nn.Module):
         else:
             self.linear1_ = self.linear1_no_bias
 
-        if args.current3 > 0:
+        if args.current3 > 0 or args.distort_act:
             linear1_out = add_noise_calculate_power(self, args, arrays, self.relu2, self.linear1.weight, self.linear1_, layer_type='linear', i=i, layer_num=2, merged_dac=args.merged_dac)
         else:
             linear1_out = self.linear1_
@@ -541,7 +547,8 @@ class Net(nn.Module):
         else:
             self.relu3 = self.relu3_
 
-        self.relu3.retain_grad()
+        if args.L3_act > 0:
+            self.relu3.retain_grad()
 
         if args.dropout > 0:
             self.relu3 = self.dropout(self.relu3)
@@ -565,7 +572,7 @@ class Net(nn.Module):
             self.linear2_ = self.linear2_no_bias
             self.bias4 = torch.Tensor([0])
 
-        if args.current4 > 0:
+        if args.current4 > 0 or args.distort_act:
             linear2_out = add_noise_calculate_power(self, args, arrays, self.relu3, self.linear2.weight, self.linear2_, layer_type='linear', i=i, layer_num=3, merged_dac=False)
         else:
             linear2_out = self.linear2_
@@ -800,6 +807,8 @@ for current in current_vars:
         var_list = [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5]
     elif args.var_name == 'width':
         var_list = [1, 2, 4]
+    elif args.var_name == 'noise':
+        var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
     elif args.var_name == 'L2_w_max':
         var_list = [0.1]    #0.1 works fine for current=10 and init_w_max=0.2, no L2, and no act_max: w_min=-0.16, w_max=0.18, Acc 78.72 (epoch 225), power 3.45, noise 0.04 (0.02, 0.03, 0.04, 0.08)
     else:
@@ -1167,7 +1176,9 @@ for current in current_vars:
                     #loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
                     loss = nn.CrossEntropyLoss()(output, label)
 
-                    if args.debug and i < 5:
+                    #print('\n\nloss:', loss)
+
+                    if args.debug and i < 2 and epoch == 0:
                         utils.print_batchnorm(model, i)
 
                     if args.LR_scheduler == 'triangle':

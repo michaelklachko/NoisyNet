@@ -229,7 +229,6 @@ def distort_weights(model, args, s=0):
 def test_distortion(model, args, val_loader=None, mode='weights'):
     if mode == 'weights':
         orig_m = copy.deepcopy(model.state_dict())
-        orig_m = copy.deepcopy(model.state_dict())
     if mode == 'acts':
         args.distort_act = True
 

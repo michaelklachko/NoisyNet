@@ -11,6 +11,11 @@ from torch.distributions.uniform import Uniform
 #torch.backends.cudnn.deterministic = True
 
 def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_type='conv', i=0, layer_num=0, merged_dac=True):
+    if args.distort_act:
+        with torch.no_grad():
+            noise = output * torch.cuda.FloatTensor(output.size()).uniform_(-args.noise, args.noise)
+        return output + noise
+
     merged_dac = True
     with torch.no_grad():
         if (args.uniform_ind > 0 and self.training) or (args.uniform_ind > 0 and args.noise_test):
