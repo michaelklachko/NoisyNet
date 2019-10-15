@@ -242,6 +242,121 @@ class QuantMeasure(nn.Module):
 		return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, inplace, self.debug)
 
 
+
+class AddNoise(InplaceFunction):
+
+	@classmethod
+	def forward(cls, ctx, input, noise=0, clip=0, debug=False):
+
+		output = input.clone()
+
+		if debug:
+			print('\n\nAdding Noise:\ninput\n', input[0, 0])
+
+		with torch.no_grad():
+			#unoise = output * torch.cuda.FloatTensor(output.size()).uniform_(-noise, noise)
+			unoise = output * output.new_empty(output.shape).uniform_(-noise, noise)
+			#print('\nnoise\n', noise[0, 0])
+			output.add_(unoise)
+			if debug:
+				print('added {:d}% of noise:\n{}\n'.format(int(noise*100), output[0, 0]))
+			if clip > 0:
+				output.clamp_(-clip, clip)
+				if debug:
+					print('clipped at {:.2f}:\n{}\n'.format(clip, output[0, 0]))
+
+		return output
+
+	@staticmethod
+	def backward(ctx, grad_output):
+		# straight-through estimator
+		grad_input = grad_output
+		return grad_input, None, None, None
+
+
+class NoisyConv2d(nn.Conv2d):
+
+	def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,
+	             num_bits=0, num_bits_weight=None, clip=0, noise=0.5, debug=False, stochastic=True):
+		super(NoisyConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
+		self.num_bits = num_bits
+		self.fms = out_channels
+		self.fs = kernel_size
+		self.clip = clip
+		self.noise = noise
+		self.num_bits_weight = num_bits_weight
+		self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
+		self.debug = debug
+
+	def forward(self, input):
+		if self.debug:
+			print('\n\nEntering Convolutional Layer with {:d} {:d}x{:d} filters\n\n'.format(self.fms, self.fs, self.fs))
+		if self.num_bits > 0 and self.num_bits < 8:
+			qinput = self.quantize_input(input)
+		else:
+			qinput = input
+
+		noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+
+		noisy_bias = None
+		if self.bias is not None:
+			noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+
+		output = F.conv2d(qinput, noisy_weight, noisy_bias, self.stride, self.padding, self.dilation, self.groups)
+
+		return output
+
+
+class NoisyLinear(nn.Linear):
+
+	def __init__(self, in_features, out_features, bias=True, num_bits=8, num_bits_weight=None, clip=0, noise=0.5, debug=False, stochastic=True):
+		super(NoisyLinear, self).__init__(in_features, out_features, bias)
+		self.fc_in = in_features
+		self.fc_out = out_features
+		self.num_bits = num_bits
+		self.num_bits_weight = num_bits_weight
+		self.clip = clip
+		self.noise = noise
+		self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
+		self.stochastic = stochastic
+		self.debug = debug
+
+	def forward(self, input):
+		if self.debug:
+			print('\n\nEntering Fully connected Layer {:d}x{:d}\n\n'.format(self.fc_in, self.fc_out))
+
+		if self.num_bits > 0 and self.num_bits < 8:
+			qinput = self.quantize_input(input)
+		else:
+			qinput = input
+
+		noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+
+		noisy_bias = None
+		if self.bias is not None:
+			noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+
+		output = F.linear(qinput, noisy_weight, noisy_bias)
+
+		return output
+
+
+def conv2d_biprec(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
+	out1 = F.conv2d(input.detach(), weight, bias, stride, padding, dilation, groups)
+	out2 = F.conv2d(input, weight.detach(), bias.detach() if bias is not None else None, stride, padding, dilation, groups)
+	return out1 + out2 - out1.detach()
+
+
+def linear_biprec(input, weight, bias=None):
+	out1 = F.linear(input.detach(), weight, bias)
+	out2 = F.linear(input, weight.detach(), bias.detach() if bias is not None else None)
+	return out1 + out2 - out1.detach()
+
+
+def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, stochastic=0.5, inplace=False, enforce_true_zero=False, out_half=False, debug=False):
+	return UniformQuantize().apply(x, num_bits, min_value, max_value, stochastic, inplace, enforce_true_zero, num_chunks, out_half, debug)
+
+
 class QConv2d(nn.Conv2d):
 
 	def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,
