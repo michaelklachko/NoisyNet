@@ -1635,7 +1635,6 @@ for current in current_vars:
                     avg_w_sparsity = np.mean(w_sparsity)
                     w_sparsity_string = '  w spars {:.2f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_w_sparsity, *w_sparsity)
 
-                if args.print_stats:
                     print('{}\tEpoch {:>3d}  Train {:.2f}  Test {:.2f}{}  LR {:.4f}{}{}{}{}{}{}{}'.format(
                         str(datetime.now())[:-7], epoch, tr_acc, te_acc, te_acc_dist_string, lr, clip_string, power_string,
                         noise_string, w_sparsity_string, input_sparsity_string, act_q_string, norm_string_reduced))
@@ -1680,7 +1679,7 @@ for current in current_vars:
                     else:
                         prev_best_acc = best_accuracy
 
-            print('\n\n{} {}  Best Accuracy: {:.2f} (epoch {})\n\n'.format(args.var_name, var, best_accuracy, best_epoch))
+            print('\n\nSimulation {:d}  {} {}  Best Accuracy: {:.2f} (epoch {})\n\n'.format(s, args.var_name, var, best_accuracy, best_epoch))
             best_accuracies.append(best_accuracy)
             if args.print_stats:
                 print('\n\nCurrent {}  {} {}  Simulation {:d} Best Accuracy: {:.2f}{} (epoch {:d}){}{}{}\n\n'.format(
