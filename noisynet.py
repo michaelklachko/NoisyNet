@@ -244,7 +244,7 @@ parser.add_argument('--LR_max_epoch', type=int, default=10, metavar='', help='fo
 parser.add_argument('--LR_finetune_epochs', type=int, default=20, metavar='', help='for triangle LR schedule (super-convergence), number of epochs to finetune in the end')
 parser.add_argument('--LR_step', type=float, default=0.1, metavar='', help='reduce learning rate by this number after LR_step_after number of epochs')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='', help='momentum')
-parser.add_argument('--optim', type=str, default='Adam', metavar='', help='optimizer type')
+parser.add_argument('--optim', type=str, default='AdamW', metavar='', help='optimizer type')
 parser.add_argument('--LR_scheduler', type=str, default='manual', metavar='', help='LR scheduler type')
 parser.add_argument('--L1_1', type=float, default=0.0, metavar='', help='Negative L1 penalty (conv1 layer)')
 parser.add_argument('--L1_2', type=float, default=0.0, metavar='', help='Negative L1 penalty (conv2 layer)')
@@ -339,7 +339,7 @@ class Net(nn.Module):
             print('\n\nQuantizing conv1 layer weights to {:d} bits\n\n'.format(args.q_w1))
             self.conv1 = QConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w1,
                                  biprecision=args.biprecision, stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w1 > 0:
+        elif args.n_w1 > 0 or args.n_w_test > 0:
             print('\n\nAdding {:.2f}% noise to conv1 layer weights\n\n'.format(int(args.n_w1*100)))
             self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=0, clip=0, noise=args.n_w1,
                                      test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
@@ -350,7 +350,7 @@ class Net(nn.Module):
             print('\n\nQuantizing conv2 layer weights to {:d} bits\n\n'.format(args.q_w2))
             self.conv2 = QConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w2,
                                  biprecision=args.biprecision, stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w2 > 0:
+        elif args.n_w2 > 0 or args.n_w_test > 0:
             print('\n\nAdding {:.2f}% noise to conv2 layer weights\n\n'.format(int(args.n_w2*100)))
             self.conv2 = NoisyConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=0,
                                      clip=0, noise=args.n_w2, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
@@ -361,7 +361,7 @@ class Net(nn.Module):
             print('\n\nQuantizing fc1 layer weights to {:d} bits\n\n'.format(args.q_w3))
             self.linear1 = QLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w3,
                                    biprecision=args.biprecision, stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w3 > 0:
+        elif args.n_w3 > 0 or args.n_w_test > 0:
             print('\n\nAdding {:.2f}% noise to linear1 layer weights\n\n'.format(int(args.n_w3 * 100)))
             self.linear1 = NoisyLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=0,
                                      clip=0, noise=args.n_w3, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
@@ -372,7 +372,7 @@ class Net(nn.Module):
             print('\n\nQuantizing fc2 layer weights to {:d} bits\n\n'.format(args.q_w4))
             self.linear2 = QLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w4, biprecision=args.biprecision,
                                    stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w4 > 0:
+        elif args.n_w4 > 0 or args.n_w_test > 0:
             print('\n\nAdding {:.2f}% noise to linear2 layer weights\n\n'.format(int(args.n_w4 * 100)))
             self.linear2 = NoisyLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=0,
                                      clip=0, noise=args.n_w4, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
@@ -839,6 +839,8 @@ for current in current_vars:
     elif args.var_name == 'width':
         var_list = [1, 2, 4]
     elif args.var_name == 'noise':
+        var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+    elif args.var_name == 'n_w':
         var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
     elif args.var_name == 'L2_w_max':
         var_list = [0.1]    #0.1 works fine for current=10 and init_w_max=0.2, no L2, and no act_max: w_min=-0.16, w_max=0.18, Acc 78.72 (epoch 225), power 3.45, noise 0.04 (0.02, 0.03, 0.04, 0.08)
@@ -1679,11 +1681,11 @@ for current in current_vars:
                     else:
                         prev_best_acc = best_accuracy
 
-            print('\n\nSimulation {:d}  {} {}  Best Accuracy: {:.2f} (epoch {})\n\n'.format(s, args.var_name, var, best_accuracy, best_epoch))
+            print('\n\nSimulation {:d}  {} {}  Best Accuracy: {:.2f} (epoch {})\n\n'.format(s, args.tag+args.var_name, var, best_accuracy, best_epoch))
             best_accuracies.append(best_accuracy)
             if args.print_stats:
                 print('\n\nCurrent {}  {} {}  Simulation {:d} Best Accuracy: {:.2f}{} (epoch {:d}){}{}{}\n\n'.format(
-                    args.current1, args.var_name, var, s, best_accuracy, best_accuracy_dist_string, best_epoch, best_power_string, best_noise_string, best_w_sparsity_string, best_input_sparsity_string))
+                    args.current1, args.tag+args.var_name, var, s, best_accuracy, best_accuracy_dist_string, best_epoch, best_power_string, best_noise_string, best_w_sparsity_string, best_input_sparsity_string))
 
                 best_accuracies_dist.append(best_accuracy_dist)
                 best_powers.append(best_power)

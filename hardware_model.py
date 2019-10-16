@@ -294,7 +294,7 @@ class AddNoise(InplaceFunction):
         return grad_input, None, None, None
 
 
-class NoisyConv2d(nn.Conv2d):   #TODO merge conv and linear layers
+class NoisyConv2d(nn.Conv2d):
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=False,
                  num_bits=0, num_bits_weight=0, clip=0, noise=0.5, test_noise=0, stochastic=True, debug=False):
@@ -319,11 +319,11 @@ class NoisyConv2d(nn.Conv2d):   #TODO merge conv and linear layers
 
         noisy_bias = None
 
-        if self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or scale bn params!
+        if self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or adjust bn params!
             noisy_weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
             if self.bias is not None:
                 noisy_bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
-        elif self.training:
+        elif self.noise > 0 and self.training:
             noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
             if self.bias is not None:
                 noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
@@ -365,7 +365,7 @@ class NoisyLinear(nn.Linear):
             noisy_weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
             if self.bias is not None:
                 noisy_bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
-        elif self.training:
+        elif self.noise > 0 and self.training:
             noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
             if self.bias is not None:
                 noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
