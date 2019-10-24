@@ -109,11 +109,6 @@ feature_parser.add_argument('--no-debug_quant', dest='debug_quant', action='stor
 parser.set_defaults(debug_quant=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
-feature_parser.add_argument('--distort_w_train', dest='distort_w_train', action='store_true')
-feature_parser.add_argument('--no-distort_w_train', dest='distort_w_train', action='store_false')
-parser.set_defaults(distort_w_train=False)
-
-feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--distort_w_test', dest='distort_w_test', action='store_true')
 feature_parser.add_argument('--no-distort_w_test', dest='distort_w_test', action='store_false')
 parser.set_defaults(distort_w_test=False)
@@ -736,7 +731,7 @@ for current in current_vars:
 
     args.layer_currents = [args.current1, args.current2, args.current3, args.current4]
 
-    if args.distort_w_test or args.distort_w_train:
+    if args.distort_w_test:
         if args.current1 > 0:
             margin1 = args.w_scale * 0.1 / args.current1
             margin2 = args.w_scale * 0.1 / args.current2
@@ -844,6 +839,9 @@ for current in current_vars:
         var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
     elif args.var_name == 'n_w':
         var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+    elif args.var_name == 'selected_weights':
+        var_list = [1, 2, 3, 5, 10, 20, 30]
+        acc_lists = []
     elif args.var_name == 'L2_w_max':
         var_list = [0.1]    #0.1 works fine for current=10 and init_w_max=0.2, no L2, and no act_max: w_min=-0.16, w_max=0.18, Acc 78.72 (epoch 225), power 3.45, noise 0.04 (0.02, 0.03, 0.04, 0.08)
     else:
@@ -989,7 +987,10 @@ for current in current_vars:
                         model.load_state_dict(m)
 
                 #model.load_state_dict(torch.load(args.resume))
-                utils.print_model(model, args, full=args.debug)
+                if args.distort_w_test and args.var_name != '':
+                    pass
+                else:
+                    utils.print_model(model, args, full=args.debug)
 
                 if args.fp16:
                     model = model.half()
@@ -997,8 +998,6 @@ for current in current_vars:
                         for layer in model.modules():
                             if isinstance(layer, nn.BatchNorm2d) or isinstance(layer, nn.BatchNorm1d):
                                 layer.float()
-
-                model.eval()
 
                 if args.w_max > 0:
                     for n, p in model.named_parameters():
@@ -1008,6 +1007,21 @@ for current in current_vars:
 
                 if args.merge_bn:
                     merge_batchnorm(model, args)
+
+                if args.distort_w_test and args.var_name != '':
+                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
+                    acc_lists.append(accs)
+                    if var == var_list[-1]:
+                        noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                        print('\n\nNoise levels (%):', noise_levels, '\n')
+                        for v, accs in zip(var_list, acc_lists):
+                            print('sel_{:02d}_scale_{:d} = {}'.format(int(v), int(args.selected_weights_noise_scale * 100), accs))
+                        print('\n\n')
+                        raise(SystemExit)
+                    break
+
+                model.eval()
 
                 model_fname = args.resume.split('/')[-1]
                 init_epoch = int(model_fname.split('_')[2])
@@ -1072,7 +1086,7 @@ for current in current_vars:
                     print('\n\nFraction of clipped first layer weights: {:.2f}%\n\n'.format(fraction))
 
                 if args.distort_w_test:
-                    test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
                     raise(SystemExit)
                     '''
                     print('\n\nDistorting weights\n\n')
@@ -1221,33 +1235,6 @@ for current in current_vars:
                         acc_ = te_acc
                     else:
                         acc_ = 10.  #needed to pass to forward
-
-                    if args.distort_w_train:
-                        if args.debug and i == 0 and epoch == 0:
-                            print('\n\n\nWeights before distortion:\n{}\n{}\n{}\n{}\n'.format(
-                                model.conv1.weight.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.detach().cpu().numpy()[0, 0, :2],
-                                model.linear1.weight.detach().cpu().numpy()[0, :10], model.linear2.weight.detach().cpu().numpy()[0, :10]))
-                        orig_params_1 = []
-                        for n, p in model.named_parameters():
-                            if ('conv' in n or 'linear' in n) and 'weight' in n:
-                                if i == 0 and epoch == 0:
-                                    print('\n\nDistorting {} by {:d}%'.format(n, int(args.noise*100)))
-                                orig_params_1.append(p.clone())
-                                noise = p.data * p.new_empty(p.shape).uniform_(-args.noise, args.noise)
-                                p.data = p.data + noise
-                        """
-                        #model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-args.w_scale, args.w_scale))
-                        model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
-                        model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
-                        model.linear1.weight.data.add_(torch.cuda.FloatTensor(model.linear1.weight.size()).uniform_(-margin3, margin3))
-                        model.linear2.weight.data.add_(torch.cuda.FloatTensor(model.linear2.weight.size()).uniform_(-margin4, margin4))
-                        """
-                        if args.debug and i == 0 and epoch == 0:
-                            print('Weights after distortion:\n{}\n{}\n{}\n{}\n'.format(
-                                model.conv1.weight.data.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.data.detach().cpu().numpy()[0, 0, :2],
-                                model.linear1.weight.data.detach().cpu().numpy()[0, :10], model.linear2.weight.data.detach().cpu().numpy()[0, :10]))
-                        #raise(SystemExit)
-
 
                     output = model(input, epoch, i, s, acc=acc_)
                     #loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
@@ -1492,17 +1479,6 @@ for current in current_vars:
                                 model.conv1.weight.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.detach().cpu().numpy()[0, 0, :2],
                                 model.linear1.weight.detach().cpu().numpy()[0, :10], model.linear2.weight.detach().cpu().numpy()[0, :10]))
 
-                    if args.distort_w_train:
-                        inx = 0
-                        for n, p in model.named_params():
-                            if ('conv' in n or 'linear' in n) and 'weight' in n:
-                                p.data = orig_params_1[inx].data
-                                ind += 1
-                        if args.debug and i == 0 and epoch == 0:
-                            print('Weights restored before update:\n{}\n{}\n{}\n{}\n'.format(
-                                model.conv1.weight.data.detach().cpu().numpy()[0, 0, :2], model.conv2.weight.data.detach().cpu().numpy()[0, 0, :2],
-                                model.linear1.weight.data.detach().cpu().numpy()[0, :10], model.linear2.weight.data.detach().cpu().numpy()[0, :10]))
-
                     optimizer.step()
 
                     if False and i == 0:
@@ -1727,6 +1703,8 @@ for current in current_vars:
                     print('{:.3f}'.format(v), end=', ')
                 print('\n\n')
 
+        if args.distort_w_test and args.var_name != '':  # ugly...
+            continue
 
         results[var] += best_accuracies
         if args.print_stats:
