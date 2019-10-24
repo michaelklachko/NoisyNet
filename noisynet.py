@@ -289,6 +289,8 @@ parser.add_argument('--n_w2', type=float, default=0, metavar='', help='sescond l
 parser.add_argument('--n_w3', type=float, default=0, metavar='', help='third layer weight noise to add during training')
 parser.add_argument('--n_w4', type=float, default=0, metavar='', help='fourth layer weight noise to add during training')
 parser.add_argument('--n_w_test', type=float, default=0, metavar='', help='weight noise to add during test')
+parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
+parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
 parser.add_argument('--stochastic', type=float, default=0.5, metavar='', help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
 parser.add_argument('--seed', type=int, default=None, metavar='', help='random seed')
@@ -978,13 +980,16 @@ for current in current_vars:
                         if name == saved_name:
                             print('\tmatched, copying...')
                             param.data = saved_param.data
-                    if 'running' in saved_name:  #batchnorm stats are not in named_parameters
+                    if 'running_min' in saved_name or 'running_max' in saved_name:
+                        continue
+                    elif 'running' in saved_name and args.track_running_stats:  #batchnorm stats are not in named_parameters
                         print('\tmatched, copying...')
                         m = model.state_dict()
                         m.update({saved_name: saved_param})
                         model.load_state_dict(m)
 
                 #model.load_state_dict(torch.load(args.resume))
+                utils.print_model(model, args, full=args.debug)
 
                 if args.fp16:
                     model = model.half()
@@ -994,6 +999,12 @@ for current in current_vars:
                                 layer.float()
 
                 model.eval()
+
+                if args.w_max > 0:
+                    for n, p in model.named_parameters():
+                        if ('conv' in n or 'fc' in n or 'linear' in n) and 'weight' in n:
+                            # print(n, p.shape)
+                            p.data.clamp_(-args.w_max, args.w_max)
 
                 if args.merge_bn:
                     merge_batchnorm(model, args)
@@ -1036,6 +1047,8 @@ for current in current_vars:
                 te_acc = np.mean(te_accs)
 
                 print('\n\nRestored Model Accuracy (epoch {:d}): {:.2f}{}{}{}\n\n'.format(init_epoch, te_acc, power_string, noise_string, input_sparsity_string))
+                if not args.distort_w_test:
+                    raise(SystemExit)
                 best_accuracy = te_acc
                 best_epoch = init_epoch
                 create_dir = False
@@ -1081,7 +1094,7 @@ for current in current_vars:
                     '''
 
             if s == 0:
-                utils.print_model(model, args)
+                utils.print_model(model, args, full=args.debug)
 
             param_groups = [
                 {'params': model.conv1.parameters(), 'weight_decay': args.L2_1, 'lr': args.LR_1},

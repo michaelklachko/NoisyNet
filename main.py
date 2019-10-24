@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument('--distort_w_train', dest='distort_w_train', action='store_true', help='distort weights during train')
     parser.add_argument('--distort_act', dest='distort_act', action='store_true', help='distort activations')
     parser.add_argument('--distort_act_test', dest='distort_act_test', action='store_true', help='distort activations during test')
-    parser.add_argument('--noise', default=0.1, type=float, help='mult weights by uniform noise with this range +/-')
+    parser.add_argument('--noise', default=0, type=float, help='mult weights by uniform noise with this range +/-')
     parser.add_argument('--stochastic', default=0.5, type=float, help='stochastic uniform noise to add before rounding during quantization')
     parser.add_argument('--step-after', default=30, type=int, help='reduce LR after this number of epochs')
     parser.add_argument('--seed', default=None, type=int, help='seed for initializing training. ')
@@ -204,26 +204,58 @@ def load_from_checkpoint(args):
 
     return model, criterion, optimizer, best_acc, best_epoch, start_epoch
 
-def distort_weights(model, args, s=0):
+def distort_weights(model, args, data_loader=None):
     np.set_printoptions(precision=4, linewidth=200, suppress=True)
-    with torch.no_grad():
+    if args.selected_weights > 0:
+        # get weights
+        params = []
+        grads = []
         for n, p in model.named_parameters():
-            #print('\n\n{}\n{}\n'.format(n, p.shape))
             if ('conv' in n or 'fc' in n or 'classifier' in n or 'linear' in n) and 'weight' in n:
-                if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
-                    print('\n\n\nBefore: {} {}\n{}'.format(n, p.shape, p.detach().cpu().numpy()[0,0]))
-                #p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
-                #p_noise = torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
+                params.append(p)
+                grads.append(torch.zeros_like(p))
+        # accumulate gradients for all (n) batches
+        if isinstance(data_loader, tuple):  # TODO do not treat cifar-10 as a special case here!
+            inputs, labels = data_loader  #TODO do not use validation set for this!!!
+            for i in range(100 // args.batch_size):
+                input = inputs[i * args.batch_size:(i + 1) * args.batch_size]
+                label = labels[i * args.batch_size:(i + 1) * args.batch_size]
+                output = model(input)
+                loss = nn.CrossEntropyLoss()(output, label)
+                batch_grads = torch.autograd.grad(loss, params)   # grads for a single batch
+                for bg, grad in zip(batch_grads, grads):  # accumulate grads
+                    grad += bg
+        else:
+            pass
+            # te_acc_d = validate(data_loader, model, args)
+
+        with torch.no_grad():
+            for p, g in zip(params, grads):
+                # choose top n=selected_weights % largest gradients in each layer
+                pctl, _ = torch.kthvalue(torch.abs(g.view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
                 p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
-                if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
-                    #print('\nnoise magnitude', args.noise, '\n')
-                    print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0]))
-                #p.data.mul_(p_noise)
-                p.data.add_(p_noise)
-                if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
-                    print('\nAfter:  {} {}\n{}'.format(n, p.shape, p.detach().cpu().numpy()[0, 0]))
-            elif 'bn' in n:
-                pass
+                # distort the weights with top n gradients less than the rest of the weights
+                # how much less is controlled by args.selected_weights_noise_scale
+                p.data = torch.where(torch.abs(g.data) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
+    else:
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                # print('\n\n{}\n{}\n'.format(n, p.shape))
+                if ('conv' in n or 'fc' in n or 'classifier' in n or 'linear' in n) and 'weight' in n:
+                    if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
+                        print('\n\n\nBefore: {} {}\n{}'.format(n, p.shape, p.detach().cpu().numpy()[0,0]))
+                    # p_noise = torch.cuda.FloatTensor(p.size()).uniform_(1. - args.noise, 1. + args.noise)
+                    # p_noise = torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
+                    p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-args.noise, args.noise)
+                    if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
+                        # print('\nnoise magnitude', args.noise, '\n')
+                        print('\n\np_noise:\n{}\n'.format(p_noise.detach().cpu().numpy()[0, 0]))
+                    # p.data.mul_(p_noise)
+                    p.data.add_(p_noise)
+                    if args.debug and (n == 'module.conv1.weight' or n == 'layer1.0.conv1.weight'):
+                        print('\nAfter:  {} {}\n{}'.format(n, p.shape, p.detach().cpu().numpy()[0, 0]))
+                elif 'bn' in n:
+                    pass
 
 
 def test_distortion(model, args, val_loader=None, mode='weights'):
@@ -236,7 +268,7 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
     if args.noise > 0:
         vars = [args.noise]
     else:
-        vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+        vars = [0.5, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
 
     for args.noise in vars:
         print('\n\nDistorting {} by {}%'.format(mode, args.noise * 100))
@@ -247,8 +279,11 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
 
         for s in range(args.num_sims):
             if mode == 'weights':
-                distort_weights(model, args, s=s)
-            if isinstance(val_loader, tuple):
+                data_loader = None
+                if args.selected_weights > 0:
+                    data_loader = val_loader
+                distort_weights(model, args, data_loader=data_loader)
+            if isinstance(val_loader, tuple):   #TODO cifar-10
                 inputs, labels = val_loader
                 te_accs = []
                 for i in range(10000 // args.batch_size):
@@ -722,8 +757,20 @@ def main():
     if args.resume:
         model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
 
+        if args.w_max > 0:
+            for n, p in model.named_parameters():
+                if ('conv' in n or 'fc' in n) and 'weight' in n:
+                    # print(n, p.shape)
+                    p.data.clamp_(-args.w_max, args.w_max)
+
         if args.merge_bn:
             merge_batchnorm(model, args)
+
+        if args.w_max > 0:
+            for n, p in model.named_parameters():
+                if ('conv' in n or 'fc' in n) and 'weight' in n:
+                    # print(n, p.shape)
+                    p.data.clamp_(-0.25, 0.25)
 
         if args.distort_w_test or args.distort_act_test:
             if args.distort_w_test:
