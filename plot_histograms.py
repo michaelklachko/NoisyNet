@@ -109,7 +109,7 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
         arrays.append([weight_sums_sep_blocked.half()])
 
 
-def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=False):
+def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=False, path=None):
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111)
 
@@ -139,7 +139,8 @@ def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title=
     if log:
         plt.semilogy()
     ax.legend(loc='upper right', prop={'size': 14})
-    plt.show()
+    print('\n\nSaving plot to {}\n'.format(path))
+    plt.savefig(path, dpi=120, bbox_inches='tight')
 
 
 def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, name=None, max_input=0, max_weight=0, infos=None, pctl=99.9, labels=['1'],

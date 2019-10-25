@@ -10,7 +10,7 @@ import argparse
 import numpy as np
 
 import utils
-from plot_histograms import plot_layers, get_layers
+from plot_histograms import plot, plot_layers, get_layers
 from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QConv2d, QLinear, QuantMeasure
 from main import merge_batchnorm, distort_weights, test_distortion
 

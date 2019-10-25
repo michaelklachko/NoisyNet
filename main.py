@@ -67,6 +67,8 @@ def parse_args():
     parser.add_argument('--amp_level', default='O1', type=str, help='GPU to use, if None use all')
     parser.add_argument('--loss_scale', default=128.0, type=float, help='when using FP16 precision, scale loss by this value')
     parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
+    parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
+    parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -237,12 +239,14 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
     params = []
     for n, p in model.named_parameters():
         if ('conv' in n or 'fc' in n or 'classifier' in n or 'linear' in n) and 'weight' in n:
+            #print(n, list(p.shape), p.requires_grad)
             params.append(p)
 
     if args.selected_weights > 0:
         # get gradients
         grads = []
         pctls = []
+        criterion = nn.CrossEntropyLoss().cuda()
         for n, p in model.named_parameters():
             if ('conv' in n or 'fc' in n or 'classifier' in n or 'linear' in n) and 'weight' in n:
                 grads.append(torch.zeros_like(p))
@@ -253,18 +257,38 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
                 input = inputs[i * args.batch_size:(i + 1) * args.batch_size]
                 label = labels[i * args.batch_size:(i + 1) * args.batch_size]
                 output = model(input)
-                loss = nn.CrossEntropyLoss()(output, label)
+                loss = criterion(output, label)
                 batch_grads = torch.autograd.grad(loss, params)   # grads for a single batch
                 for bg, grad in zip(batch_grads, grads):  # accumulate grads
                     grad += bg
-        else:
-            pass
-            # te_acc_d = validate(data_loader, model, args)
+        else:   # Imagenet
+            for i, data in enumerate(val_loader):
+                if args.dali:
+                    input = data[0]["data"]
+                    target = data[0]["label"].squeeze().cuda().long()
+                    images = Variable(input)
+                    target = Variable(target)
+                else:
+                    images, target = data
+                if args.fp16 and not args.amp:
+                    images = images.half()
+                images = images.cuda(non_blocking=True)
+                target = target.cuda(non_blocking=True)
+                output = model(images)
+                loss = criterion(output, target)
+                batch_grads = torch.autograd.grad(loss, params)  # grads for a single batch
+                for bg, grad in zip(batch_grads, grads):  # accumulate grads
+                    grad += bg
+                if i == 10:
+                        break
+            if args.dali:
+                val_loader.reset()
 
         for p, g in zip(params, grads):
             # choose top n=selected_weights % largest gradients in each layer
             pctl, _ = torch.kthvalue(torch.abs(g.view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
             pctls.append(pctl)
+            #plot()
 
         selective = (grads, pctls)
     else:
@@ -306,7 +330,7 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
                 print('restored:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
         avg_te_acc_dist = np.mean(te_acc_dist)
-        acc_d.append(np.mean(avg_te_acc_dist))
+        acc_d.append(avg_te_acc_dist)
         print('\nNoise {:>5.2f}: acc {:>5.2f}'.format(noise, avg_te_acc_dist))
     print('\n\n{}\n{}\n\n\n'.format(vars, [float('{0:.2f}'.format(x)) for x in acc_d]))
     if args.distort_w_test and args.var_name is not None:
@@ -505,7 +529,7 @@ def build_model(args):
     if args.debug:
         utils.print_model(model, args, full=True)
         args.print_shapes = True
-    else:
+    elif args.var_name is not None:
         utils.print_model(model, args, full=False)
 
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
@@ -721,6 +745,9 @@ def main():
         if args.var_name == 'q_scale':
             #var_list = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98]
             var_list = [0.87, 0.88, 0.89, 0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96]
+        if args.var_name == 'selected_weights':
+            var_list = [20, 1, 2, 3, 5, 10, 20, 30]
+            acc_lists = []
 
         for var in var_list:
             setattr(args, args.var_name, var)
@@ -732,6 +759,20 @@ def main():
                     model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
                     if args.merge_bn:
                         merge_batchnorm(model, args)
+
+                    if args.distort_w_test and args.var_name is not None:
+                        accs = test_distortion(model, args, val_loader=val_loader, mode='weights')
+                        print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
+                        acc_lists.append(accs)
+                        if var == var_list[-1]:
+                            noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                            print('\n\nNoise levels (%):', noise_levels, '\n')
+                            for v, accs in zip(var_list, acc_lists):
+                                print('sel_{:02d}_scale_{:d} = {}'.format(int(v), int(args.selected_weights_noise_scale * 100), accs))
+                            print('\n\n')
+                            raise (SystemExit)
+                        break
+
                 if False and args.calculate_running:
                     for m in model.modules():
                         if isinstance(m, QuantMeasure):
@@ -739,6 +780,10 @@ def main():
                             m.running_list = []
                 acc = validate(val_loader, model, args, epoch=best_epoch, plot_acc=best_acc)
                 acc_list.append(acc)
+
+            if args.distort_w_test and args.var_name is not None:  # ugly...
+                continue
+
             total_list.append((np.mean(acc_list), np.min(acc_list), np.max(acc_list)))
             print('\n{:d} runs:  {} {} {:.2f} ({:.2f}/{:.2f})'.format(args.num_sims, args.var_name, var, *total_list[-1]))
         for var, (mean, min, max) in zip(var_list, total_list):
