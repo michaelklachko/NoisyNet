@@ -227,7 +227,7 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
                     # print('before\n', array[0].ravel()[20:40])
                     array[0] = array[0] / thr
                 # print('after\n', array[0].ravel()[20:40])
-            place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r % 4 + 1) + ' ', name=name, infos=layer_info, pctl=pctl, max_input=max_input,
+            place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r) + ' ', name=name, infos=layer_info, pctl=pctl, max_input=max_input,
                       max_weight=thr, labels=labels, normalize=normalize)
     print('\n\nSaving plot to {}\n'.format(path + filename))
     plt.savefig(path + filename, dpi=120, bbox_inches='tight')

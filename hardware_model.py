@@ -7,11 +7,6 @@ import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from torch.distributions.uniform import Uniform
 
-"""Quantization ops modified from: 
-https://github.com/eladhoffer/quantized.pytorch/blob/master/models/modules/quantize.py
-"""
-
-
 # random.seed(1)
 # torch.manual_seed(1)
 # torch.backends.cudnn.deterministic = True
@@ -131,6 +126,7 @@ def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_
 
 
 class UniformQuantize(InplaceFunction):
+    """modified from https://github.com/eladhoffer/quantized.pytorch/blob/master/models/modules/quantize.py"""
 
     @classmethod
     def forward(cls, ctx, input, num_bits=8, min_value=None, max_value=None, stochastic=0.5, inplace=False, debug=False):
@@ -186,7 +182,7 @@ class UniformQuantize(InplaceFunction):
 
 
 class QuantMeasure(nn.Module):
-    '''
+    """
     https://arxiv.org/abs/1308.3432
     https://arxiv.org/abs/1903.05662
     https://arxiv.org/abs/1903.01061
@@ -200,10 +196,10 @@ class QuantMeasure(nn.Module):
     Calculate_running indicates if we want to calculate the given percentile of signals to use as a max_value for quantization range
     if True, we will calculate pctl for several batches (only on training set), and use the average as a running_max, which will became max_value
     if False we will either use self.max_value (if given), or self.running_max (previously calculated)
-    '''
+    """
 
-    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0, max_value=0, scale=1,
-                 calculate_running=False, pctl=.999, debug=False, debug_quant=False, inplace=False):
+    def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0., max_value=0., scale=1,
+                 calculate_running=False, pctl=0., debug=False, debug_quant=False, inplace=False):
         super(QuantMeasure, self).__init__()
         self.register_buffer('running_min', torch.zeros(1))
         self.register_buffer('running_max', torch.zeros([]))
@@ -223,24 +219,35 @@ class QuantMeasure(nn.Module):
     def forward(self, input):
         # max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
         with torch.no_grad():
-            if self.calculate_running and self.training:
-                if 224 in list(input.shape):  # first layer input is special (needs more precision)
-                    if self.num_bits == 4:
-                        pctl = torch.tensor(0.92)  # args.q_a_first == 4
-                    else:
-                        pctl = torch.tensor(1.0)
+            if self.calculate_running and (self.training or self.min_value < 0):
+                if self.min_value < 0:  # quantizing weights (ReLU is always positive)
+                    pctl_pos, _ = torch.kthvalue(input[input > 0].view(-1), int(input[input > 0].numel() * self.pctl))
+                    pctl_neg, _ = -torch.kthvalue(input[input < 0].view(-1), int(input[input < 0].numel() * self.pctl))
+                    self.running_min = pctl_neg
+                    self.running_max = pctl_pos
+                    self.calculate_running = False
                 else:
-                    pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
-                # print('input.shape', input.shape, 'pctl.shape', pctl.shape)
-                # self.running_max = pctl
-                max_value = input.max().item()  # self.running_max
-                self.running_list.append(pctl)  # self.running_max)
-                # self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
-                if self.debug:
-                    print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(
-                        list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
+                    if 224 in list(input.shape):  # first layer input (Imagenet) needs more precision (at least 6 bits)
+                        if self.num_bits == 4:
+                            pctl = torch.tensor(0.92)  # args.q_a_first == 4
+                        else:
+                            pctl = torch.tensor(1.0)
+                    else:
+                        pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
+                    # print('input.shape', input.shape, 'pctl.shape', pctl.shape)
+                    # self.running_max = pctl
+                    max_value = input.max().item()  # self.running_max
+                    self.running_list.append(pctl)  # self.running_max)
+                    # self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
+                    if self.debug:
+                        print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(
+                            list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
             else:
-                if self.max_value > 0:
+                min_value = self.min_value
+                if self.min_value < 0:
+                    min_value = self.running_min.item()
+                    max_value = self.running_max.item()
+                elif self.max_value > 0:
                     max_value = self.max_value
                 elif self.running_max.item() > 0:
                     max_value = self.running_max.item()
@@ -260,7 +267,7 @@ class QuantMeasure(nn.Module):
             else:
                 stoch = 0
 
-        return UniformQuantize().apply(input, self.num_bits, float(self.min_value), float(max_value), stoch, self.inplace, self.debug_quant)
+        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, self.debug_quant)
 
 
 class AddNoise(InplaceFunction):
@@ -306,31 +313,41 @@ class NoisyConv2d(nn.Conv2d):
         self.noise = noise
         self.num_bits_weight = num_bits_weight
         self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
+        self.quantize_weights = QuantMeasure(self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=stochastic, debug=debug)
+        self.stochastic = stochastic
         self.debug = debug
         self.test_noise = test_noise
 
     def forward(self, input):
         if self.debug:
             print('\n\nEntering Convolutional Layer with {:d} {:d}x{:d} filters'.format(self.fms, self.fs, self.fs))
+
+        weight = self.weight
+        bias = self.bias
+
         if self.num_bits > 0 and self.num_bits < 8:
             qinput = self.quantize_input(input)
         else:
             qinput = input
 
-        noisy_bias = None
-
-        if self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or adjust bn params!
-            noisy_weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+        if self.num_bits_weight > 0:
+            weight = self.quantize_weights(self.weight)
+            # TODO how to quantize biases?
             if self.bias is not None:
-                noisy_bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+                print('\n\n\n****************** Quantizing bias, adjust args.pctl! *****************\n\n\n')
+                #bias = quantize(self.bias, num_bits=self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=self.stochastic)
+
+        elif self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or adjust bn params!
+            weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+            if self.bias is not None:
+                bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+
         elif self.noise > 0 and self.training:
-            noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
             if self.bias is not None:
-                noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
-        else:
-            noisy_weight = self.weight
+                bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
 
-        output = F.conv2d(qinput, noisy_weight, noisy_bias, self.stride, self.padding, self.dilation, self.groups)
+        output = F.conv2d(qinput, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
         return output
 
@@ -346,6 +363,7 @@ class NoisyLinear(nn.Linear):
         self.clip = clip
         self.noise = noise
         self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
+        self.quantize_weights = QuantMeasure(self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=stochastic, debug=debug)
         self.stochastic = stochastic
         self.debug = debug
         self.test_noise = test_noise
@@ -354,29 +372,36 @@ class NoisyLinear(nn.Linear):
         if self.debug:
             print('\n\nEntering Fully connected Layer {:d}x{:d}\n\n'.format(self.fc_in, self.fc_out))
 
+        weight = self.weight
+        bias = self.bias
+
         if self.num_bits > 0 and self.num_bits < 8:
             qinput = self.quantize_input(input)
         else:
             qinput = input
 
-        noisy_bias = None
-
-        if self.test_noise > 0 and not self.training:
-            noisy_weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+        if self.num_bits_weight > 0 and self.num_bits_weight < 8:
+            weight = self.quantize_weights(self.weight)
             if self.bias is not None:
-                noisy_bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+                print('\n\n\n****************** Quantizing bias, adjust args.pctl! *****************\n\n\n')
+                #bias = quantize(self.bias, num_bits=self.num_bits_weight)
+
+        elif self.test_noise > 0 and not self.training:
+            weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+            if self.bias is not None:
+                bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+
         elif self.noise > 0 and self.training:
-            noisy_weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
             if self.bias is not None:
-                noisy_bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
-        else:
-            noisy_weight = self.weight
+                bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
 
-        output = F.linear(qinput, noisy_weight, noisy_bias)
+        output = F.linear(qinput, weight, bias)
 
         return output
 
 
+'''
 class UniformQuantizeOrig(InplaceFunction):
 
     @classmethod
@@ -460,97 +485,4 @@ class UniformQuantizeOrig(InplaceFunction):
         # straight-through estimator
         grad_input = grad_output
         return grad_input, None, None, None, None, None, None, None, None, None
-
-
-def conv2d_biprec(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
-    out1 = F.conv2d(input.detach(), weight, bias, stride, padding, dilation, groups)
-    out2 = F.conv2d(input, weight.detach(), bias.detach() if bias is not None else None, stride, padding, dilation, groups)
-    return out1 + out2 - out1.detach()
-
-
-def linear_biprec(input, weight, bias=None):
-    out1 = F.linear(input.detach(), weight, bias)
-    out2 = F.linear(input, weight.detach(), bias.detach() if bias is not None else None)
-    return out1 + out2 - out1.detach()
-
-
-def quantize(x, num_bits=8, min_value=None, max_value=None, num_chunks=None, stochastic=0.5, inplace=False, enforce_true_zero=False, out_half=False,
-             debug=False):
-    return UniformQuantizeOrig().apply(x, num_bits, min_value, max_value, stochastic, inplace, enforce_true_zero, num_chunks, out_half, debug)
-
-
-class QConv2d(nn.Conv2d):
-
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,
-                 num_bits=8, num_bits_weight=None, biprecision=False, stochastic=0.5, debug=False):
-        super(QConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-        self.num_bits = num_bits
-        self.fms = out_channels
-        self.fs = kernel_size
-        self.num_bits_weight = num_bits_weight
-        self.quantize_input = UniformQuantize(self.num_bits, stochastic=stochastic, debug=debug)
-        self.biprecision = biprecision
-        self.stochastic = stochastic
-        self.debug = debug
-
-    def forward(self, input):
-        if self.debug:
-            print('\n\nEntering Convolutional Layer with {:d} {:d}x{:d} filters\n\n'.format(self.fms, self.fs, self.fs))
-        if self.num_bits > 0:
-            qinput = self.quantize_input(input)
-        else:
-            qinput = input
-
-        if self.num_bits_weight > 0:
-            qweight = quantize(self.weight, num_bits=self.num_bits_weight, min_value=float(self.weight.min()), max_value=float(self.weight.max()),
-                               stochastic=self.stochastic)
-        else:
-            qweight = self.weight
-        if self.bias is not None:
-            qbias = quantize(self.bias, num_bits=self.num_bits_weight)
-        else:
-            qbias = None
-        if not self.biprecision:
-            output = F.conv2d(qinput, qweight, qbias, self.stride, self.padding, self.dilation, self.groups)
-        else:
-            output = conv2d_biprec(qinput, qweight, qbias, self.stride, self.padding, self.dilation, self.groups)
-
-        return output
-
-
-class QLinear(nn.Linear):
-
-    def __init__(self, in_features, out_features, bias=True, num_bits=8, num_bits_weight=None, biprecision=False, stochastic=0.5, debug=False):
-        super(QLinear, self).__init__(in_features, out_features, bias)
-        self.fc_in = in_features
-        self.fc_out = out_features
-        self.num_bits = num_bits
-        self.num_bits_weight = num_bits_weight
-        self.biprecision = biprecision
-        self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
-        self.stochastic = stochastic
-        self.debug = debug
-
-    def forward(self, input):
-        if self.debug:
-            print('\n\nEntering Fully connected Layer {:d}x{:d}\n\n'.format(self.fc_in, self.fc_out))
-        if self.num_bits > 0:
-            qinput = self.quantize_input(input)
-        else:
-            qinput = input
-        if self.num_bits_weight > 0:
-            qweight = quantize(self.weight, num_bits=self.num_bits_weight, min_value=float(self.weight.min()), max_value=float(self.weight.max()),
-                               stochastic=self.stochastic)
-        else:
-            qweight = self.weight
-
-        if self.bias is not None:
-            qbias = quantize(self.bias, num_bits=self.num_bits_weight)
-        else:
-            qbias = None
-
-        if not self.biprecision:
-            output = F.linear(qinput, qweight, qbias)
-        else:
-            output = linear_biprec(qinput, qweight, qbias)
-        return output
+'''

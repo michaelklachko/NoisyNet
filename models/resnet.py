@@ -57,8 +57,8 @@ class BasicBlock(nn.Module):
             get_layers(arrays, x, self.conv1.weight, out, stride=self.stride, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.print_shapes:
-            print('\nblock input:', x.shape)
-            print('conv1:', out.shape)
+            print('\nblock input:', list(x.shape))
+            print('conv1:', list(out.shape))
 
         if args.merge_bn:
             bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
@@ -89,7 +89,7 @@ class BasicBlock(nn.Module):
             get_layers(arrays, conv2_input, self.conv2.weight, out, stride=1, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.print_shapes:
-            print('conv2:', out.shape)
+            print('conv2:', list(out.shape))
 
         if args.merge_bn:
             bias = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * \
@@ -106,7 +106,7 @@ class BasicBlock(nn.Module):
         if self.downsample is not None:
             residual = self.conv3(x)
             if args.print_shapes:
-                print('conv3 (shortcut downsampling):', out.shape)
+                print('conv3 (shortcut downsampling):', list(out.shape))
             if args.merge_bn:
                 bias = self.bn3.bias.view(1, -1, 1, 1) - self.bn3.running_mean.data.view(1, -1, 1, 1) * \
                        self.bn3.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn3.running_var.data.view(1, -1, 1, 1) + args.eps)
@@ -116,7 +116,7 @@ class BasicBlock(nn.Module):
 
         out += residual
         if args.print_shapes:
-            print('x + shortcut:', out.shape)
+            print('x + shortcut:', list(out.shape))
 
         out = self.relu(out)
         return out
@@ -180,7 +180,7 @@ class ResNet(nn.Module):
 
     def forward(self, x, epoch=0, i=0, acc=0.0):
         if args.print_shapes:
-            print('RGB input:', x.shape)
+            print('RGB input:', list(x.shape))
         if self.q_a_first > 0:
             x = self.quantize1(x)
 
@@ -193,7 +193,7 @@ class ResNet(nn.Module):
 
         x = self.conv1(x)
         if args.print_shapes:
-            print('first conv:', x.shape)
+            print('first conv:', list(x.shape))
 
         if args.plot:
             get_layers(arrays, conv1_input, self.conv1.weight, x, stride=2, padding=3, layer='conv', basic=args.plot_basic, debug=args.debug)
@@ -213,7 +213,7 @@ class ResNet(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
         if args.print_shapes:
-            print('after max pooling:', x.shape)
+            print('after max pooling:', list(x.shape))
         x = self.layer1(x)
         if args.print_shapes:
             print('\nDownsampling the input:')
@@ -228,10 +228,10 @@ class ResNet(nn.Module):
         x = self.avgpool(x)
 
         if args.print_shapes:
-            print('\nafter avg pooling:', x.shape)
+            print('\nafter avg pooling:', list(x.shape))
         x = x.view(x.size(0), -1)
         if args.print_shapes:
-            print('reshaped:', x.shape)
+            print('reshaped:', list(x.shape))
         if args.q_a > 0:
             x = self.quantize2(x)
 
@@ -253,7 +253,7 @@ class ResNet(nn.Module):
             arrays.append([self.fc.bias.half()])
 
         if args.print_shapes:
-            print('\noutput:', x.shape)
+            print('\noutput:', list(x.shape))
 
         if args.plot:
             arrays.append([x.half()])

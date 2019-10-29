@@ -685,7 +685,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {} | {:.2f}'.format(
                     str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs)))
 
-            if args.calculate_running and epoch == start_epoch and i == 5:
+            if args.q_a > 0 and args.calculate_running and epoch == start_epoch and i == 5:
                 print('\n')
                 with torch.no_grad():
                     for m in model.modules():

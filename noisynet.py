@@ -11,7 +11,7 @@ import numpy as np
 
 import utils
 from plot_histograms import plot, plot_layers, get_layers
-from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QConv2d, QLinear, QuantMeasure
+from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QuantMeasure
 from main import merge_batchnorm, distort_weights, test_distortion
 
 #CUDA_LAUNCH_BLOCKING=1
@@ -332,49 +332,17 @@ class Net(nn.Module):
         self.quantize3 = QuantMeasure(args.q_a3, stochastic=args.stochastic, debug=args.debug_quant)
         self.quantize4 = QuantMeasure(args.q_a4, stochastic=args.stochastic, debug=args.debug_quant)
 
-        if args.q_w1 > 0:  #TODO merge q_w and q_n, decide what to do with weight clipping
-            print('\n\nQuantizing conv1 layer weights to {:d} bits\n\n'.format(args.q_w1))
-            self.conv1 = QConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w1,
-                                 biprecision=args.biprecision, stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w1 > 0 or args.n_w_test > 0:
-            print('\n\nAdding {:.2f}% noise to conv1 layer weights\n\n'.format(int(args.n_w1*100)))
-            self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=0, clip=0, noise=args.n_w1,
-                                     test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        else:
-            self.conv1 = nn.Conv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias)
+        self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w1,
+                                     clip=0, noise=args.n_w1, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
-        if args.q_w2 > 0:
-            print('\n\nQuantizing conv2 layer weights to {:d} bits\n\n'.format(args.q_w2))
-            self.conv2 = QConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w2,
-                                 biprecision=args.biprecision, stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w2 > 0 or args.n_w_test > 0:
-            print('\n\nAdding {:.2f}% noise to conv2 layer weights\n\n'.format(int(args.n_w2*100)))
-            self.conv2 = NoisyConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=0,
+        self.conv2 = NoisyConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w2,
                                      clip=0, noise=args.n_w2, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        else:
-            self.conv2 = nn.Conv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias)
 
-        if args.q_w3 > 0:
-            print('\n\nQuantizing fc1 layer weights to {:d} bits\n\n'.format(args.q_w3))
-            self.linear1 = QLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w3,
-                                   biprecision=args.biprecision, stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w3 > 0 or args.n_w_test > 0:
-            print('\n\nAdding {:.2f}% noise to linear1 layer weights\n\n'.format(int(args.n_w3 * 100)))
-            self.linear1 = NoisyLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=0,
+        self.linear1 = NoisyLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w3,
                                      clip=0, noise=args.n_w3, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        else:
-            self.linear1 = nn.Linear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias)
 
-        if args.q_w4 > 0:
-            print('\n\nQuantizing fc2 layer weights to {:d} bits\n\n'.format(args.q_w4))
-            self.linear2 = QLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w4, biprecision=args.biprecision,
-                                   stochastic=args.stochastic, debug=args.debug_quant)
-        elif args.n_w4 > 0 or args.n_w_test > 0:
-            print('\n\nAdding {:.2f}% noise to linear2 layer weights\n\n'.format(int(args.n_w4 * 100)))
-            self.linear2 = NoisyLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=0,
+        self.linear2 = NoisyLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w4,
                                      clip=0, noise=args.n_w4, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        else:
-            self.linear2 = nn.Linear(args.fc * args.width, 10, bias=args.use_bias)
 
         if args.batchnorm:
             self.bn1 = nn.BatchNorm2d(args.fm1 * args.width, track_running_stats=args.track_running_stats)
