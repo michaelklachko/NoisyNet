@@ -1153,7 +1153,23 @@ for current in current_vars:
             norm_string = ''
             max_string = ''
 
+            # when quantizing activations, calculate signal ranges in all layers
+            if args.calculate_running:
+                for m in model.modules():
+                    if isinstance(m, QuantMeasure):
+                        m.calculate_running = True
+                        m.running_list = []
+
             for epoch in range(args.nepochs):
+                # when quantizing activations, calculate signal ranges in all layers
+                if args.q_a > 0 and args.calculate_running and epoch == 0 and i == 5:
+                    print('\n')
+                    with torch.no_grad():
+                        for m in model.modules():
+                            if isinstance(m, QuantMeasure):
+                                m.calculate_running = False
+                                m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
+                                print('(train) running_list:', m.running_list, 'running_max:', m.running_max)
 
                 model.power = [[] for _ in range(args.num_layers)]
                 model.nsr = [[] for _ in range(args.num_layers)]

@@ -773,7 +773,7 @@ def main():
                             raise (SystemExit)
                         break
 
-                if False and args.calculate_running:
+                if args.calculate_running:
                     for m in model.modules():
                         if isinstance(m, QuantMeasure):
                             m.calculate_running = True
