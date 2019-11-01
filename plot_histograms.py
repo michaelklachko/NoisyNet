@@ -147,7 +147,7 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
               log=True, normalize=True):
     ax = plt.subplot2grid((rows, columns), (r, c))
     min_value = max_value = 0
-    if range_ is None:
+    if range_ is None:  #TODO what is this for???
         for a in arrays:
             min_value = min(min_value, np.min(a))
             max_value = max(max_value, np.max(a))
@@ -200,7 +200,7 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
     ax.legend(loc='upper right', prop={'size': 15})
 
 
-def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, labels=['1'], normalize=True):
+def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, labels=['1'], normalize=False):
     figsize = (len(names) * 7, len(layers) * 6)
     # figsize = (len(names) * 7, 2 * 6)
     plt.figure(figsize=figsize)
@@ -208,6 +208,8 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
     columns = len(layers[0])
     thr = 0
     max_input = 0
+    if info is None:
+        info = [['', '']] * len(layers)  #TODO get rid of this
 
     for r, layer, layer_info in zip(range(rows), layers, info):
         for c, name in zip(range(columns), names):
@@ -235,7 +237,7 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
     plt.close()
 
 
-def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], infos=None, pctl=99.9, acc=0.0, tag='', normalize=True):
+def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None, var='', vars=[0.0], infos=None, pctl=99.9, acc=0.0, tag='', normalize=False):
     accs = [acc]
 
     if len(models) > 1:

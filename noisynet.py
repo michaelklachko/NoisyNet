@@ -629,11 +629,11 @@ class Net(nn.Module):
                 if 'weight' in n and ('conv' in n or 'linear' in n):
                     inputs.append(np.prod(p.shape[1:]))
 
-            for i in range(len(inputs)):
+            for idx in range(len(inputs)):
                 temp = []
-                temp.append('{:d} inputs '.format(inputs[i]))
+                temp.append('{:d} inputs '.format(inputs[idx]))
                 if args.plot_power:
-                    temp.append('{:.2f}mW '.format(self.power[i][0]))
+                    temp.append('{:.2f}mW '.format(self.power[idx][0]))
                 info.append(temp)
 
             if args.plot:
@@ -1481,6 +1481,7 @@ for current in current_vars:
                         model.conv2.weight.data.clamp_(-args.w_max2, args.w_max2)
 
                     if args.w_max3 > 0:
+                        model.linear1.weight.data.clamp_(-args.w_max3, args.w_max3)
                         model.linear1.weight.data.clamp_(-args.w_max3, args.w_max3)
 
                     if args.w_max4 > 0:
