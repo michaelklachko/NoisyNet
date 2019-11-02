@@ -196,6 +196,10 @@ class QuantMeasure(nn.Module):
     Calculate_running indicates if we want to calculate the given percentile of signals to use as a max_value for quantization range
     if True, we will calculate pctl for several batches (only on training set), and use the average as a running_max, which will became max_value
     if False we will either use self.max_value (if given), or self.running_max (previously calculated)
+
+    Currently, calculate_running param is set in the training code, and NOT passed as an argument - TODO need to fix that
+
+    If using dropout, during training the activations are divided by 1-p. Multiply calculate_running by 1-p during test.
     """
 
     def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0., max_value=0., scale=1,
@@ -219,13 +223,16 @@ class QuantMeasure(nn.Module):
     def forward(self, input):
         # max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
         with torch.no_grad():
-            if self.calculate_running and (self.training or self.min_value < 0):
+            min_value = self.min_value
+            if self.calculate_running:
                 if self.min_value < 0:  # quantizing weights (ReLU is always positive)
-                    pctl_pos, _ = torch.kthvalue(input[input > 0].view(-1), int(input[input > 0].numel() * self.pctl))
-                    pctl_neg, _ = -torch.kthvalue(input[input < 0].view(-1), int(input[input < 0].numel() * self.pctl))
+                    pctl_pos, _ = torch.kthvalue(input[input > 0].flatten(), int(input[input > 0].numel() * self.pctl / 100.))
+                    pctl_neg, _ = -torch.kthvalue(input[input < 0].flatten(), int(input[input < 0].numel() * self.pctl / 100.))
                     self.running_min = pctl_neg
                     self.running_max = pctl_pos
                     self.calculate_running = False
+                    min_value = self.running_min.item()
+                    max_value = self.running_max.item()
                 else:
                     if 224 in list(input.shape):  # first layer input (Imagenet) needs more precision (at least 6 bits)
                         if self.num_bits == 4:
@@ -233,7 +240,7 @@ class QuantMeasure(nn.Module):
                         else:
                             pctl = torch.tensor(1.0)
                     else:
-                        pctl, _ = torch.kthvalue(input.view(-1), int(input.numel() * self.pctl))
+                        pctl, _ = torch.kthvalue(input.flatten(), int(input.numel() * self.pctl / 100.))
                     # print('input.shape', input.shape, 'pctl.shape', pctl.shape)
                     # self.running_max = pctl
                     max_value = input.max().item()  # self.running_max
@@ -243,8 +250,7 @@ class QuantMeasure(nn.Module):
                         print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(
                             list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
             else:
-                min_value = self.min_value
-                if self.min_value < 0:
+                if self.min_value < 0 and self.running_min < 0:
                     min_value = self.running_min.item()
                     max_value = self.running_max.item()
                 elif self.max_value > 0:
@@ -252,8 +258,8 @@ class QuantMeasure(nn.Module):
                 elif self.running_max.item() > 0:
                     max_value = self.running_max.item()
                 else:
-                    # print('\n\nrunning_max is ', self.running_max.item())
-                    max_value = input.max()
+                    print('\n\nSetting max_value to input.max\nrunning_max is ', self.running_max.item())
+                    max_value = input.max().item()
 
                 if False and max_value > 1:
                     max_value = max_value * self.scale
@@ -312,8 +318,10 @@ class NoisyConv2d(nn.Conv2d):
         self.clip = clip
         self.noise = noise
         self.num_bits_weight = num_bits_weight
-        self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
-        self.quantize_weights = QuantMeasure(self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=stochastic, debug=debug)
+        if num_bits > 0:
+            self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
+        if num_bits_weight > 0:
+            self.quantize_weights = QuantMeasure(self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=stochastic, debug=debug)
         self.stochastic = stochastic
         self.debug = debug
         self.test_noise = test_noise
@@ -362,8 +370,10 @@ class NoisyLinear(nn.Linear):
         self.num_bits_weight = num_bits_weight
         self.clip = clip
         self.noise = noise
-        self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
-        self.quantize_weights = QuantMeasure(self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=stochastic, debug=debug)
+        if num_bits > 0:
+            self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
+        if num_bits_weight > 0:
+            self.quantize_weights = QuantMeasure(self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=stochastic, debug=debug)
         self.stochastic = stochastic
         self.debug = debug
         self.test_noise = test_noise

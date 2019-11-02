@@ -270,6 +270,7 @@ parser.add_argument('--weight_init_scale_fc', type=float, default=1.0, metavar='
 parser.add_argument('--w_scale', type=float, default=1.0, metavar='', help='weight distortion scaling factor')
 parser.add_argument('--early_stop_after', type=int, default=100, metavar='', help='number of epochs to tolerate without improvement')
 parser.add_argument('--var_name', type=str, default='', metavar='', help='variable to test')
+parser.add_argument('--q_a', type=int, default=0, metavar='', help='activation quantization bits')
 parser.add_argument('--q_a1', type=int, default=0, metavar='', help='activation quantization bits')
 parser.add_argument('--q_w1', type=int, default=0, metavar='', help='weight quantization bits')
 parser.add_argument('--q_a2', type=int, default=0, metavar='', help='activation quantization bits')
@@ -327,10 +328,10 @@ class Net(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
         self.relu = nn.ReLU()
 
-        self.quantize1 = QuantMeasure(args.q_a1, stochastic=args.stochastic, debug=args.debug_quant)
-        self.quantize2 = QuantMeasure(args.q_a2, stochastic=args.stochastic, debug=args.debug_quant)
-        self.quantize3 = QuantMeasure(args.q_a3, stochastic=args.stochastic, debug=args.debug_quant)
-        self.quantize4 = QuantMeasure(args.q_a4, stochastic=args.stochastic, debug=args.debug_quant)
+        self.quantize1 = QuantMeasure(args.q_a1, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
+        self.quantize2 = QuantMeasure(args.q_a2, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
+        self.quantize3 = QuantMeasure(args.q_a3, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
+        self.quantize4 = QuantMeasure(args.q_a4, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
 
         self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w1,
                                      clip=0, noise=args.n_w1, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
@@ -770,7 +771,8 @@ for current in current_vars:
         var_list = [0, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4]
         var_list = [0, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4]
     elif args.var_name == 'L1':
-        var_list = [1e-6, 2e-6, 5e-6, 1e-5, 3e-5, 2e-5, 5e-5, 0.0001]
+        var_list = [0, 1e-7, 2e-7, 5e-7, 1e-6, 2e-6, 5e-6, 1e-5]#, 3e-5, 2e-5, 5e-5, 0.0001]
+        #var_list = [1e-5, 2e-5, 5e-5, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1]
     elif args.var_name == 'L2_2':
         var_list = [0.0, 0.00001, 0.00002, 0.00003, 0.00005, 0.0001]#, 0.0002, 0.0003, 0.0005, 0.001]
     elif args.var_name == 'L3':
@@ -820,6 +822,8 @@ for current in current_vars:
             print('\n\n********** Setting {} to {} **********\n\n'.format(args.var_name, var))
             setattr(args, args.var_name, var)
 
+        if args.q_a > 0:
+            args.q_a1 = args.q_a2 = args.q_a3 = args.q_a4 = args.q_a
         if args.L2 > 0:
             #args.L2_1 = args.L2_2 = args.L2_3 = args.L2_4 = args.L2
             #args.L2_1 = args.L2_2 = args.L2_3 = args.L2_4 = args.L2 * math.sqrt(args.width)
@@ -1154,23 +1158,13 @@ for current in current_vars:
             max_string = ''
 
             # when quantizing activations, calculate signal ranges in all layers
-            if args.calculate_running:
+            if args.q_a > 0 and args.calculate_running:
                 for m in model.modules():
                     if isinstance(m, QuantMeasure):
                         m.calculate_running = True
                         m.running_list = []
 
             for epoch in range(args.nepochs):
-                # when quantizing activations, calculate signal ranges in all layers
-                if args.q_a > 0 and args.calculate_running and epoch == 0 and i == 5:
-                    print('\n')
-                    with torch.no_grad():
-                        for m in model.modules():
-                            if isinstance(m, QuantMeasure):
-                                m.calculate_running = False
-                                m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
-                                print('(train) running_list:', m.running_list, 'running_max:', m.running_max)
-
                 model.power = [[] for _ in range(args.num_layers)]
                 model.nsr = [[] for _ in range(args.num_layers)]
                 model.input_sparsity = [[] for _ in range(args.num_layers)]
@@ -1205,6 +1199,17 @@ for current in current_vars:
                 clip_string = ''
 
                 for i in range(num_train_batches):
+                    # when quantizing activations, calculate signal ranges in all layers for the first 5 batches:
+                    if args.q_a > 0 and args.calculate_running and epoch == 0 and i == 5:
+                        print('\n')
+                        with torch.no_grad():
+                            for m in model.modules():
+                                #print(m)
+                                if isinstance(m, QuantMeasure):
+                                    m.calculate_running = False
+                                    m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
+                                    print('(train) running_list:', m.running_list, 'running_max:', m.running_max.item())
+
                     input = train_inputs[i * args.batch_size:(i + 1) * args.batch_size]  #(64, 3, 32, 32)
                     label = train_labels[i * args.batch_size:(i + 1) * args.batch_size]
 
@@ -1223,8 +1228,6 @@ for current in current_vars:
                     output = model(input, epoch, i, s, acc=acc_)
                     #loss = nn.CrossEntropyLoss(reduction='none')(output, label).sum()
                     loss = nn.CrossEntropyLoss()(output, label)
-
-                    #print('\n\nloss:', loss)
 
                     if args.debug and i < 2 and epoch == 0:
                         utils.print_batchnorm(model, i)
