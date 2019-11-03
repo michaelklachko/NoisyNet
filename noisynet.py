@@ -241,11 +241,11 @@ parser.add_argument('--LR_step', type=float, default=0.1, metavar='', help='redu
 parser.add_argument('--momentum', type=float, default=0.9, metavar='', help='momentum')
 parser.add_argument('--optim', type=str, default='AdamW', metavar='', help='optimizer type')
 parser.add_argument('--LR_scheduler', type=str, default='manual', metavar='', help='LR scheduler type')
-parser.add_argument('--L1_1', type=float, default=0.0, metavar='', help='Negative L1 penalty (conv1 layer)')
-parser.add_argument('--L1_2', type=float, default=0.0, metavar='', help='Negative L1 penalty (conv2 layer)')
-parser.add_argument('--L1_3', type=float, default=0.0, metavar='', help='Negative L1 penalty (linear1 layer)')
-parser.add_argument('--L1_4', type=float, default=0.0, metavar='', help='Negative L1 penalty (linear2 layer)')
-parser.add_argument('--L1', type=float, default=0.0, metavar='', help='Negative L1 penalty')
+parser.add_argument('--L1_1', type=float, default=0.0, metavar='', help='L1 penalty (conv1 layer)')
+parser.add_argument('--L1_2', type=float, default=0.0, metavar='', help='L1 penalty (conv2 layer)')
+parser.add_argument('--L1_3', type=float, default=0.0, metavar='', help='L1 penalty (linear1 layer)')
+parser.add_argument('--L1_4', type=float, default=0.0, metavar='', help='L1 penalty (linear2 layer)')
+parser.add_argument('--L1', type=float, default=0.0, metavar='', help='L1 penalty')
 parser.add_argument('--L2_w_max', type=float, default=0.000, metavar='', help='loss penalty scale to minimize w_max')
 parser.add_argument('--L2_act_max', type=float, default=0.000, metavar='', help='loss penalty scale to minimize act_max')
 parser.add_argument('--L2_bn', type=float, default=0.000, metavar='', help='loss penalty scale to minimize bn params (shift and scale)')
@@ -773,6 +773,7 @@ for current in current_vars:
     elif args.var_name == 'L1':
         var_list = [0, 1e-7, 2e-7, 5e-7, 1e-6, 2e-6, 5e-6, 1e-5]#, 3e-5, 2e-5, 5e-5, 0.0001]
         #var_list = [1e-5, 2e-5, 5e-5, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1]
+        var_list = [2e-6, 4e-6, 6e-6, 8e-6, 1e-5, 2e-5, 3e-5]
     elif args.var_name == 'L2_2':
         var_list = [0.0, 0.00001, 0.00002, 0.00003, 0.00005, 0.0001]#, 0.0002, 0.0003, 0.0005, 0.001]
     elif args.var_name == 'L3':

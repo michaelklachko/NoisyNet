@@ -34,9 +34,10 @@ def parse_args():
     parser.add_argument('--epochs', default=150, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
     parser.add_argument('-b', '--batch-size', default=256, type=int, metavar='N')
-    parser.add_argument('--lr', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
+    parser.add_argument('--lr', '--LR', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
-    parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
+    parser.add_argument('--L1', type=float, default=0.000, metavar='', help='L1 for params')
+    parser.add_argument('--wd', '--L2', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
     parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
     parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency (default: 10)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
@@ -54,6 +55,9 @@ def parse_args():
     parser.add_argument('--var_name', default=None, type=str, help='var name for hyperparam search. ')
     parser.add_argument('--q_a', default=4, type=int, help='number of bits to quantize layer input')
     parser.add_argument('--q_a_first', default=0, type=int, help='number of bits to quantize first layer input (RGB dataset)')
+    parser.add_argument('--q_w', default=0, type=int, help='number of bits to quantize layer weights')
+    parser.add_argument('--n_w', type=float, default=0, metavar='', help='weight noise to add during training (0.05 == 5%)')
+    parser.add_argument('--n_w_test', type=float, default=0, metavar='', help='weight noise to add during test')
     parser.add_argument('--local_rank', default=0, type=int, help='')
     parser.add_argument('--world_size', default=1, type=int, help='')
     parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
@@ -68,6 +72,7 @@ def parse_args():
     parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
     parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
     parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
+    parser.add_argument('--debug_noise', dest='debug_noise', action='store_true', help='debug when adding noise to weights')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -553,7 +558,7 @@ def build_model(args):
     elif args.amp:
         from apex import amp
         optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-        #model, optimizer = amp.initialize(model, optimizer, opt_level=args.opt_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32, loss_scale=args.loss_scale)
+        # model, optimizer = amp.initialize(model, optimizer, opt_level=args.opt_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32, loss_scale=args.loss_scale)
         model, optimizer = amp.initialize(model, optimizer, opt_level=args.amp_level, keep_batchnorm_fp32=args.keep_batchnorm_fp32)
     else:
         optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
@@ -563,8 +568,7 @@ def build_model(args):
             from apex.parallel import DistributedDataParallel as DDP
             # shared param/delay all reduce turns off bucketing in DDP, for lower latency runs this can improve perf
             # for the older version of APEX please use shared_param, for newer one it is delay_allreduce
-
-            #By default, apex.parallel.DistributedDataParallel overlaps communication with
+            # By default, apex.parallel.DistributedDataParallel overlaps communication with
             # computation in the backward pass.
             # delay_allreduce delays all communication to the end of the backward pass.
             model = DDP(model, delay_allreduce=True)
@@ -577,7 +581,7 @@ def build_model(args):
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
-        print('lr', args.lr, 'wd', args.weight_decay, 'L3', args.L3)
+        print('LR', args.lr, 'wd', args.weight_decay, 'L1', args.L1, 'L3', args.L3)
         #for param_group in optimizer.param_groups:
             #param_group['lr'] = args.lr
             #param_group['weight_decay'] = args.weight_decay
@@ -592,13 +596,6 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 train_loader_len = int(train_loader._size / args.batch_size)
                 images = Variable(input)
                 target = Variable(target)
-                '''
-                if args.fp16 and not args.amp:
-                        input_var = input_var.half()
-                output = model(input_var, epoch=epoch, i=i)
-                #print('\n\n\noutput', output)
-                loss = criterion(output, target_var)
-                '''
             else:
                 images, target = data
                 train_loader_len = len(train_loader)
@@ -614,9 +611,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 args.print_shapes = False
             acc = utils.accuracy(output, target)
             tr_accs.append(acc)
-            #optimizer.zero_grad()
-            #loss.backward()
-            #loss.backward(retain_graph=True)
+
             '''
             print('\n\n\nIteration', i)
             for n, p in model.named_parameters():
@@ -626,7 +621,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                     else:
                         print('\n\n{}\nvalue\n{}\ngradient\n{}\n'.format(n, p[:4], p.grad))
             '''
-            if args.L3 > 0:  #L2 penalty for gradient size
+            if args.L3 > 0:  # L2 penalty for gradient size
                 params = [p for n, p in model.named_parameters() if ('conv' in n or 'fc' in n) and 'weight' in n]
                 param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=True)
                 # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
@@ -635,11 +630,19 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 for grad in param_grads:
                     grad_norm += args.L3 * grad.pow(2).sum()
                 # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
-                #grad_norm.backward(retain_graph=False)  # or like this:
+                # grad_norm.backward(retain_graph=False)  # or like this:
                 loss = loss + grad_norm
-                #optimizer.zero_grad()
-                #loss.backward(retain_graph=True)
-            #else:
+
+            if args.L1 > 0:
+                if epoch == 0 and i == 0:
+                    print('\n\nApplying L1 loss penalty {} to model weights\n\n'.format(args.L1))
+                for n, p in model.named_parameters():
+                    if ('conv' in n or 'fc' in n or 'linear' in n) and 'weight' in n:
+                        loss = loss + args.L1 * p.norm(p=1)
+
+            if args.w_max > 0:
+                if epoch == 0 and i == 0:
+                    print('\n\nClipping weights to ({}, {}) range\n\n'.format(-args.w_max, args.w_max))
 
             optimizer.zero_grad()
             if args.fp16:
@@ -680,17 +683,6 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                     if ('conv' in n or 'fc' in n) and 'weight' in n:
                         #print(n, p.shape)
                         p.data.clamp_(-args.w_max, args.w_max)
-                '''
-                if args.train_w_max:
-                    model.conv1.weight.data = torch.where(model.conv1.weight > model.w_max1, model.w_max1, model.conv1.weight)
-                    model.conv1.weight.data = torch.where(model.conv1.weight < model.w_min1, model.w_min1, model.conv1.weight)
-                else:
-                    model.conv1.weight.data.clamp_(-args.w_max, args.w_max)
-                '''
-
-            #torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': 0.0,
-            # 'optimizer': optimizer.state_dict()}, args.tag + '.pth')
-            #raise(SystemExit)
 
         acc = validate(val_loader, model, args, epoch=epoch)
         if acc > best_acc:
@@ -717,6 +709,17 @@ def main():
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
     train_loader, val_loader = utils.setup_data(args)
+
+    if args.act_max > 0:
+        print('\n\nClipping activations to (0, {:.1f}) range\n\n'.format(args.act_max))
+    if args.q_a > 0:
+        print('\n\nQuantizing activations to {:d} bits, calculate_running is {}, pctl={:.3f}\n\n'.format(args.q_a, args.calculate_running, args.pctl))
+    if args.q_w > 0:
+        print('\n\nQuantizing weights to {:d} bits, calculate_running is {}, pctl={:.3f}\n\n'.format(args.q_w, args.calculate_running, args.pctl))
+    if args.n_w > 0:
+        print('\n\nAdding {:.1f}% noise to weights during training\n\n'.format(100.*args.n_w))
+    if args.n_w_test > 0:
+        print('\n\nAdding {:.1f}% noise to weights during test\n\n'.format(100.*args.n_w_test))
 
     if args.var_name is not None:
         total_list = []

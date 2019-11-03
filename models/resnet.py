@@ -8,6 +8,7 @@ import torch.utils.data
 
 from quant import QuantMeasure
 from plot_histograms import get_layers, plot_layers
+from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QuantMeasure
 
 
 class BasicBlock(nn.Module):
@@ -15,23 +16,28 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.downsample = downsample
         self.stride = stride
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.layer1 = []
-        self.layer2 = []
+        #self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
 
         if args.act_max > 0:
             self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
         else:
             self.relu = nn.ReLU(inplace=True)
 
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        #self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = NoisyConv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
+                                 clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+
+        self.conv2 = NoisyConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
+                                 clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+        self.bn1 = nn.BatchNorm2d(planes)
         self.bn2 = nn.BatchNorm2d(planes)
 
         if downsample is not None:
             ds_in, ds_out, ds_strides = downsample
             self.ds_strides = ds_strides
-            self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
+            #self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
+            self.conv3 = NoisyConv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False, num_bits=0, num_bits_weight=args.q_w,
+                                     clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
             self.bn3 = nn.BatchNorm2d(ds_out)
             self.layer3 = []
 
@@ -126,10 +132,12 @@ class ResNet(nn.Module):
 
     def __init__(self, block, num_classes=1000):
         self.inplanes = 64
-        global arrays  #for plotting
+        global arrays  # for plotting
         arrays = []
         super(ResNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        #self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = NoisyConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False, num_bits=0, num_bits_weight=args.q_w,
+                                 clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         self.bn1 = nn.BatchNorm2d(64)
         if args.act_max > 0:
             self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
@@ -158,6 +166,8 @@ class ResNet(nn.Module):
 
         self.avgpool = nn.AvgPool2d(7, stride=1)
         self.fc = nn.Linear(512, num_classes)
+        self.fc = NoisyLinear(512, num_classes, bias=True, num_bits=0, num_bits_weight=args.q_w,
+                                   clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):

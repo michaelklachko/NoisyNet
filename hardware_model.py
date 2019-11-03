@@ -342,7 +342,8 @@ class NoisyConv2d(nn.Conv2d):
             weight = self.quantize_weights(self.weight)
             # TODO how to quantize biases?
             if self.bias is not None:
-                print('\n\n\n****************** Quantizing bias, adjust args.pctl! *****************\n\n\n')
+                pass
+                #print('\n\n\n****************** Quantizing bias, adjust args.pctl! *****************\n\n\n')
                 #bias = quantize(self.bias, num_bits=self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=self.stochastic)
 
         elif self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or adjust bn params!
@@ -362,7 +363,7 @@ class NoisyConv2d(nn.Conv2d):
 
 class NoisyLinear(nn.Linear):
 
-    def __init__(self, in_features, out_features, bias=False, num_bits=0, num_bits_weight=0, clip=0, noise=0.5, test_noise=0, stochastic=True, debug=False):
+    def __init__(self, in_features, out_features, bias=False, num_bits=0, num_bits_weight=0, clip=0, noise=0, test_noise=0, stochastic=True, debug=False):
         super(NoisyLinear, self).__init__(in_features, out_features, bias)
         self.fc_in = in_features
         self.fc_out = out_features
@@ -392,9 +393,11 @@ class NoisyLinear(nn.Linear):
 
         if self.num_bits_weight > 0 and self.num_bits_weight < 8:
             weight = self.quantize_weights(self.weight)
+            # TODO how to quantize biases?
             if self.bias is not None:
-                print('\n\n\n****************** Quantizing bias, adjust args.pctl! *****************\n\n\n')
-                #bias = quantize(self.bias, num_bits=self.num_bits_weight)
+                pass
+                # print('\n\n\n****************** Quantizing bias, adjust args.pctl! *****************\n\n\n')
+                # bias = quantize(self.bias, num_bits=self.num_bits_weight)
 
         elif self.test_noise > 0 and not self.training:
             weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
@@ -402,10 +405,15 @@ class NoisyLinear(nn.Linear):
                 bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
 
         elif self.noise > 0 and self.training:
+            if self.debug:
+                print('Adding noise to weights in linear layer:', 100.*self.noise, '%')
+                print('\n\nBefore:\n{}'.format(self.weight[0, :20]))
+
             weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            if self.debug:
+                print('\n\nAfter:\n{}'.format(weight[0, :20]))
             if self.bias is not None:
                 bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
-
         output = F.linear(qinput, weight, bias)
 
         return output
