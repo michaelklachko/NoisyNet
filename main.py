@@ -38,7 +38,6 @@ def parse_args():
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
     parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
-    parser.add_argument('--L3_old', type=float, default=0.000, metavar='', help='L2 for param grads (original version)')
     parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency (default: 10)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
     parser.add_argument('--tag', default='', type=str, metavar='PATH', help='tag')
@@ -230,10 +229,12 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
         args.distort_act = True
 
     acc_d = []
+    error_bars = []
+
     if args.noise > 0:
         vars = [args.noise]
     else:
-        vars = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+        vars = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
 
     # get weights
     params = []
@@ -330,9 +331,12 @@ def test_distortion(model, args, val_loader=None, mode='weights'):
                 print('restored:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
         avg_te_acc_dist = np.mean(te_acc_dist)
+        error_bars.append(te_acc_dist)
         acc_d.append(avg_te_acc_dist)
-        print('\nNoise {:>5.2f}: acc {:>5.2f}'.format(noise, avg_te_acc_dist))
+        print('\nNoise {:>5.2f}: {}  avg acc {:>5.2f}'.format(noise, [float('{:.2f}'.format(v)) for v in te_acc_dist], avg_te_acc_dist))
     print('\n\n{}\n{}\n\n\n'.format(vars, [float('{0:.2f}'.format(x)) for x in acc_d]))
+    for var, bar, avg_acc in zip(vars, error_bars, acc_d):
+        print('Noise', var, [float('{:.2f}'.format(v)) for v in bar], '{:.2f}'.format(avg_acc))
     if args.distort_w_test and args.var_name is not None:
         return [float('{0:.2f}'.format(x)) for x in acc_d]
     elif args.noise > 0:
@@ -573,7 +577,7 @@ def build_model(args):
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
-        print('lr', args.lr, 'wd', args.weight_decay, 'L3', max(args.L3, args.L3_old))
+        print('lr', args.lr, 'wd', args.weight_decay, 'L3', args.L3)
         #for param_group in optimizer.param_groups:
             #param_group['lr'] = args.lr
             #param_group['weight_decay'] = args.weight_decay
@@ -623,22 +627,15 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                         print('\n\n{}\nvalue\n{}\ngradient\n{}\n'.format(n, p[:4], p.grad))
             '''
             if args.L3 > 0:  #L2 penalty for gradient size
-                #for n, p in model.named_parameters():
-                    #if ('conv' in n or 'fc' in n) and 'weight' in n:
-                        #print(n, list(p.shape))
-                #raise(SystemExit)
                 params = [p for n, p in model.named_parameters() if ('conv' in n or 'fc' in n) and 'weight' in n]
-                #params = [model.conv1.weight, model.conv2.weight, model.linear1.weight, model.linear2.weight]
                 param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=True)
                 # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
                 # now compute the 2-norm of the param_grads
                 grad_norm = 0
                 for grad in param_grads:
-                    #print('param_grad {}:\n{}\ngrad.pow(2).mean(): {:.4f}'.format(grad.shape, grad[0,0], grad.pow(2).mean().item()))
-                    grad_norm += args.L3 * grad.pow(2).mean()
+                    grad_norm += args.L3 * grad.pow(2).sum()
                 # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
                 #grad_norm.backward(retain_graph=False)  # or like this:
-                #print('loss {:.4f} grad_norm {:.4f}'.format(loss.item(), grad_norm.item()))
                 loss = loss + grad_norm
                 #optimizer.zero_grad()
                 #loss.backward(retain_graph=True)
@@ -655,23 +652,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
             else:
-                if args.L3_old > 0:
-                    retain_graph = True
-                else:
-                    retain_graph = False
-                loss.backward(retain_graph=retain_graph)
-
-            if args.L3_old > 0:  #L2 penalty for gradient size
-                params = [p for n, p in model.named_parameters() if ('conv' in n or 'fc' in n) and 'weight' in n]
-                #TODO only_inputs should be True here, but the optimal L2_old param should be adjusted:
-                param_grads = torch.autograd.grad(loss, params, create_graph=True, only_inputs=False)
-                # torch.autograd.grad does not accumuate the gradients into the .grad attributes. It instead returns the gradients as Variable tuples.
-                # now compute the 2-norm of the param_grads
-                grad_norm = 0
-                for grad in param_grads:
-                    grad_norm += args.L3_old * grad.pow(2).sum()
-                # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
-                grad_norm.backward(retain_graph=False)
+                loss.backward(retain_graph=False)
 
             if args.grad_clip > 0:
                 for n, p in model.named_parameters():
@@ -746,7 +727,7 @@ def main():
             #var_list = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98]
             var_list = [0.87, 0.88, 0.89, 0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96]
         if args.var_name == 'selected_weights':
-            var_list = [20, 1, 2, 3, 5, 10, 20, 30]
+            var_list = [0, 1, 2, 3, 5, 10, 20, 30]
             acc_lists = []
 
         for var in var_list:
