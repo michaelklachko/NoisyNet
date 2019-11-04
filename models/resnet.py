@@ -165,12 +165,14 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, stride=2)
 
         self.avgpool = nn.AvgPool2d(7, stride=1)
-        self.fc = nn.Linear(512, num_classes)
+        #self.fc = nn.Linear(512, num_classes)
         self.fc = NoisyLinear(512, num_classes, bias=True, num_bits=0, num_bits_weight=args.q_w,
                                    clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         for m in self.modules():
+            print(m)
             if isinstance(m, nn.Conv2d):
+                print('is instance of nn.Conv2D\n')
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
             elif isinstance(m, nn.BatchNorm2d):
@@ -280,6 +282,7 @@ class ResNet(nn.Module):
             names.append('pre-activations')
 
             print('\n\nPreparing arrays for plotting:\n')
+
             layers = []
             layer = []
             print('\n\nlen(arrays) // len(names):', len(arrays), len(names), len(arrays) // len(names), '\n\n')

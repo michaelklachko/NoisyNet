@@ -475,11 +475,6 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                 input = data[0]["data"]
                 target = data[0]["label"].squeeze().cuda().long()
                 images = Variable(input)
-                '''
-                if args.fp16 and not args.amp:
-                    images = images.half()
-                output = model(images, epoch=epoch, i=i, acc=plot_acc)
-                '''
             else:
                 images, target = data
             if args.fp16 and not args.amp:
@@ -741,6 +736,10 @@ def main():
                 #print('\nSimulation', s)
                 if args.resume:
                     model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
+
+                    if args.fp16 and not args.amp:
+                        model = model.half()
+
                     if args.merge_bn:
                         merge_batchnorm(model, args)
 
@@ -777,6 +776,9 @@ def main():
 
     if args.resume:
         model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
+
+        if args.fp16 and not args.amp:
+            model = model.half()
 
         if args.w_max > 0:
             for n, p in model.named_parameters():
