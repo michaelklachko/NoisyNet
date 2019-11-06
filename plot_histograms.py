@@ -10,14 +10,14 @@ import torch.nn.functional as F
 
 
 def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv', basic=False, debug=False):
-    print('Input:', list(input.shape), 'weights:', list(weight.shape), 'layer type:', layer)
+    print('\n\nInput:', list(input.shape), 'weights:', list(weight.shape), 'output:', list(output.shape), 'layer type:', layer)
     with torch.no_grad():
         print('\n\nLayer:', layer)
-        arrays.append([input.half()])
+        arrays.append([input.half().detach().cpu().numpy()])
         print('adding input, len(arrays):', len(arrays))
-        arrays.append([weight.half()])
+        arrays.append([weight.half().detach().cpu().numpy()])
         print('adding weights, len(arrays):', len(arrays))
-        arrays.append([output.half()])
+        arrays.append([output.half().detach().cpu().numpy()])
         print('adding vmms, len(arrays):', len(arrays))
 
         if basic:
@@ -99,14 +99,14 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
 
         sep = torch.cat((neg, pos), 0)
 
-        arrays.append([sep.half()])
-        arrays.append([blocked.half()])
-        arrays.append([sep_blocked.half()])
+        arrays.append([sep.half().detach().cpu().numpy()])
+        arrays.append([blocked.half().detach().cpu().numpy()])
+        arrays.append([sep_blocked.half().detach().cpu().numpy()])
 
-        arrays.append([weight_sums.half()])
-        arrays.append([weight_sums_sep.half()])
-        arrays.append([weight_sums_blocked.half()])
-        arrays.append([weight_sums_sep_blocked.half()])
+        arrays.append([weight_sums.half().detach().cpu().numpy()])
+        arrays.append([weight_sums_sep.half().detach().cpu().numpy()])
+        arrays.append([weight_sums_blocked.half().detach().cpu().numpy()])
+        arrays.append([weight_sums_sep_blocked.half().detach().cpu().numpy()])
 
 
 def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=False, path=None):

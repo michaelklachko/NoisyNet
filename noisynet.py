@@ -286,6 +286,8 @@ parser.add_argument('--n_w3', type=float, default=0, metavar='', help='third lay
 parser.add_argument('--n_w4', type=float, default=0, metavar='', help='fourth layer weight noise to add during training')
 parser.add_argument('--n_w_test', type=float, default=0, metavar='', help='weight noise to add during test')
 parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
+parser.add_argument('--noise_values', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
+parser.add_argument('--selection_criteria', type=str, default='combined', metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
 parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
 parser.add_argument('--stochastic', type=float, default=0.5, metavar='', help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
@@ -561,6 +563,7 @@ class Net(nn.Module):
         if args.bn4 and args.merge_bn:
             if self.training:
                 print('\n\n************ Merging BatchNorm during training! **********\n\n')
+                raise(SystemExit)
             self.bias4 = self.bn4.bias.view(1, -1) - self.bn4.running_mean.data.view(1, -1) * self.bn4.weight.data.view(1, -1) / torch.sqrt(self.bn4.running_var.data.view(1, -1) + 0.0000001)
             self.linear2_ = self.linear2_no_bias + self.bias4
             if args.plot or args.write:
@@ -946,15 +949,18 @@ for current in current_vars:
                 saved_model = torch.load(args.resume)  #ignore unnecessary parameters
 
                 for saved_name, saved_param in saved_model.items():
-                    print(saved_name)
+                    if args.debug:
+                        print(saved_name)
                     for name, param in model.named_parameters():
                         if name == saved_name:
-                            print('\tmatched, copying...')
+                            if args.debug:
+                                print('\tmatched, copying...')
                             param.data = saved_param.data
                     if 'running_min' in saved_name or 'running_max' in saved_name:
                         continue
                     elif 'running' in saved_name and args.track_running_stats:  #batchnorm stats are not in named_parameters
-                        print('\tmatched, copying...')
+                        if args.debug:
+                            print('\tmatched, copying...')
                         m = model.state_dict()
                         m.update({saved_name: saved_param})
                         model.load_state_dict(m)
@@ -982,11 +988,12 @@ for current in current_vars:
                     merge_batchnorm(model, args)
 
                 if args.distort_w_test and args.var_name != '':
-                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
                     acc_lists.append(accs)
                     if var == var_list[-1]:
-                        noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                         print('\n\nNoise levels (%):', noise_levels, '\n')
                         for v, accs in zip(var_list, acc_lists):
                             print('sel_{:02d}_scale_{:d} = {}'.format(int(v), int(args.selected_weights_noise_scale * 100), accs))
@@ -1059,26 +1066,10 @@ for current in current_vars:
                     print('\n\nFraction of clipped first layer weights: {:.2f}%\n\n'.format(fraction))
 
                 if args.distort_w_test:
-                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     raise(SystemExit)
-                    '''
-                    print('\n\nDistorting weights\n\n')
-                    model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
-                    model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
-                    model.linear1.weight.data.add_(torch.cuda.FloatTensor(model.linear1.weight.size()).uniform_(-margin3, margin3))
-                    model.linear2.weight.data.add_(torch.cuda.FloatTensor(model.linear2.weight.size()).uniform_(-margin4, margin4))
-
-                    for i in range(10000 // args.batch_size):
-                        input = test_inputs[i * args.batch_size:(i + 1) * args.batch_size]
-                        label = test_labels[i * args.batch_size:(i + 1) * args.batch_size]
-                        output = model(input, init_epoch, i, acc=init_acc)
-                        pred = output.data.max(1)[1]
-                        te_acc = pred.eq(label.data).cpu().sum().numpy() * 100.0 / args.batch_size
-                        te_accs.append(te_acc)
-                    te_acc = np.mean(te_accs)
-                    print('\n\nRestored Model Accuracy after weights distortion {:.2f}\n\n'.format(te_acc))
-                    raise (SystemExit)
-                    '''
 
             if s == 0:
                 utils.print_model(model, args, full=args.debug)
@@ -1535,63 +1526,10 @@ for current in current_vars:
                 te_acc = np.mean(te_accuracies)
 
                 if args.distort_w_test:
-                    avg_te_acc_dist = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights')
+                    # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    avg_te_acc_dist = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)
-                    """
-                    te_acc_dists = []
-                    orig_params = []
-
-                    for n, p in model.named_parameters():
-                        if False and n == 'conv1.weight':
-                            print('\n\nConv1 Weights (p) before:                 {}'.format(p.data.detach().cpu().numpy()[0, 0, :1]))
-                            print('Conv1 Weights (p.clone()) before:         {}'.format(p.clone().data.detach().cpu().numpy()[0, 0, :1]))
-                            print('Conv1 Weights (conv1.weight.data) before: {}\n\n'.format(model.conv1.weight.data.detach().cpu().numpy()[0, 0, :1]))
-
-                        orig_params.append(p.clone())
-
-                    for _ in range(5):
-                        te_accuracies_dist = []
-                        with torch.no_grad():
-                            '''
-                            model.conv1.weight.data.add_(torch.cuda.FloatTensor(model.conv1.weight.size()).uniform_(-margin1, margin1))
-                            model.conv2.weight.data.add_(torch.cuda.FloatTensor(model.conv2.weight.size()).uniform_(-margin2, margin2))
-                            model.linear1.weight.data.add_(torch.cuda.FloatTensor(model.linear1.weight.size()).uniform_(-margin3, margin3))
-                            model.linear2.weight.data.add_(torch.cuda.FloatTensor(model.linear2.weight.size()).uniform_(-margin4, margin4))
-                            '''
-                            distort_weights(model, args)
-
-                            bs = 2000
-                            for i in range(10000 // bs):
-                                input = test_inputs[i * bs:(i + 1) * bs]
-                                label = test_labels[i * bs:(i + 1) * bs]
-                                output = model(input, epoch, i)
-                                pred = output.data.max(1)[1]
-                                te_acc_d = pred.eq(label.data).cpu().sum().numpy() * 100.0 / bs
-                                te_accuracies_dist.append(te_acc_d)
-
-                        #print('\n', te_accuracies_dist)
-                        te_acc_dist = np.mean(te_accuracies_dist)
-                        te_acc_dists.append(te_acc_dist)
-
-                        for (n, p), orig_p in zip(model.named_parameters(), orig_params):
-                            if False and n == 'conv1.weight':
-                                if p is model.conv1.weight:
-                                    print('\np is model.conv1.weight\n\n')
-                                print('\n\nConv1 Weights (p) before:                 {}'.format(p.data.detach().cpu().numpy()[0, 0, :1]))
-                                print('Conv1 Weights (conv1.weight.data) before: {}'.format(model.conv1.weight.data.detach().cpu().numpy()[0, 0, :1]))
-                                print('Conv1 Weights (orig_p) before:            {}'.format(orig_p.data.detach().cpu().numpy()[0, 0, :1]))
-
-                            p.data = orig_p.clone().data
-
-                            if False and n == 'conv1.weight':
-                                #if p is model.conv1.weight:
-                                print('\nConv1 Weights (p) after:                  {}'.format(p.data.detach().cpu().numpy()[0, 0, :1]))
-                                print('Conv1 Weights (conv1.weight.data) after:  {}'.format(model.conv1.weight.data.detach().cpu().numpy()[0, 0, :1]))
-                                print('Conv1 Weights (orig_p) after:             {}'.format(orig_p.data.detach().cpu().numpy()[0, 0, :1]))
-
-                    avg_te_acc_dist = np.mean(te_acc_dists)
-                    te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)
-                    """
 
                 if args.train_act_max:
                     clip_string = '  act_max {:.2f} {:.2f} {:.2f}'.format(model.act_max1.item(), model.act_max2.item(), model.act_max3.item())

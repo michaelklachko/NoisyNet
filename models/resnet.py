@@ -71,12 +71,12 @@ class BasicBlock(nn.Module):
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
             out += bias
             if args.plot:
-                arrays.append([bias.half()])
+                arrays.append([bias.half().detach().cpu().numpy()])
         else:
             out = self.bn1(out)
 
         if args.plot:
-            arrays.append([out.half()])
+            arrays.append([out.half().detach().cpu().numpy()])
 
         out = self.relu(out)
 
@@ -102,12 +102,12 @@ class BasicBlock(nn.Module):
                    self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
             out += bias
             if args.plot:
-                arrays.append([bias.half()])
+                arrays.append([bias.half().detach().cpu().numpy()])
         else:
             out = self.bn2(out)
 
         if args.plot:
-            arrays.append([out.half()])
+            arrays.append([out.half().detach().cpu().numpy()])
 
         if self.downsample is not None:
             residual = self.conv3(x)
@@ -215,12 +215,12 @@ class ResNet(nn.Module):
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
             x += bias
             if args.plot:
-                arrays.append([bias.half()])
+                arrays.append([bias.half().detach().cpu().numpy()])
         else:
             x = self.bn1(x)
 
         if args.plot:
-            arrays.append([x.half()])
+            arrays.append([x.half().detach().cpu().numpy()])
 
         x = self.relu(x)
         x = self.maxpool(x)
@@ -262,13 +262,13 @@ class ResNet(nn.Module):
             get_layers(arrays, fc_input, self.fc.weight, x, layer='linear', basic=args.plot_basic, debug=args.debug)
 
         if args.merge_bn and args.plot:
-            arrays.append([self.fc.bias.half()])
+            arrays.append([self.fc.bias.half().detach().cpu().numpy()])
 
         if args.print_shapes:
             print('\noutput:', list(x.shape))
 
         if args.plot:
-            arrays.append([x.half()])
+            arrays.append([x.half().detach().cpu().numpy()])
 
         if args.plot:
             if args.plot_basic:
@@ -291,7 +291,7 @@ class ResNet(nn.Module):
                 print('layer', k, names)
                 for j in range(len(names)):
                     #print('\t', names[j])
-                    layer.append([arrays[len(names)*k+j][0].detach().cpu().numpy()])
+                    layer.append([arrays[len(names)*k+j][0]])
                 layers.append(layer)
                 layer = []
 
