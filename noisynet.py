@@ -253,6 +253,8 @@ parser.add_argument('--L2', type=float, default=0.000, metavar='', help='weight 
 parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
 parser.add_argument('--L3_new', type=float, default=0.000, metavar='', help='L2 for param grads')
 parser.add_argument('--L3_act', type=float, default=0.000, metavar='', help='L2 for act grads')
+parser.add_argument('--L3_L2', dest='L3_L2', action='store_true', help='use L2 for gradients')
+parser.add_argument('--L3_L1', dest='L3_L1', action='store_true', help='use L1 for gradients')
 parser.add_argument('--L4', type=float, default=0.000, metavar='', help='L2 for param 2nd order grads')
 parser.add_argument('--L2_1', type=float, default=0.000, metavar='', help='weight decay for layer 1')
 parser.add_argument('--L2_2', type=float, default=0.000, metavar='', help='weight decay for layer 2')
@@ -1134,8 +1136,6 @@ for current in current_vars:
                 mom = args.momentum
 
             prev_best_acc = 15
-            scale_add = 0.2  #used to increase strength of L3 regularizers
-
             grad_norms = []
             act_grad_norms = []
             act_norms = []
@@ -1297,7 +1297,10 @@ for current in current_vars:
                         grad_norm = 0
                         for grad in param_grads:
                             # print('param_grad {}:\n{}\ngrad.pow(2).mean(): {:.4f}'.format(grad.shape, grad[0,0], grad.pow(2).mean().item()))
-                            grad_norm += args.L3_new * grad.pow(2).sum()#.mean()
+                            if args.L3_L2:
+                                grad_norm += args.L3_new * grad.pow(2).sum()#.mean()
+                            elif args.L3_L1:
+                                grad_norm += args.L3_new * grad.norm(p=1)
                         # take the gradients wrt grad_norm. backward() will accumulate the gradients into the .grad attributes
                         # grad_norm.backward(retain_graph=False)  # or like this:
                         # print('loss {:.4f} grad_norm {:.4f}'.format(loss.item(), grad_norm.item()))
