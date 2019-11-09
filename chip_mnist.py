@@ -136,6 +136,10 @@ def main():
     num_train_batches = int(len(train_inputs) / args.batch_size)
     best_acc = 0
     for epoch in range(args.epochs):
+        if epoch == 80:
+            print('\nReducing learning rate ')
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.LR / 10.
         train_acc = train(args, model, num_train_batches, train_inputs, train_labels, optimizer)
         val_acc = test(model, test_inputs, test_labels)
         print('Epoch {:>2d} train acc {:.2f} test acc {:.2f}'.format(epoch, train_acc, val_acc))
@@ -151,7 +155,8 @@ def main():
                     print('\n\nSaving MLP:\n{}\n'.format(mlp_dict))
                     # np.save('mlp.npy', arrays[2:])
                     # scipy.io.savemat('chip_plots/mnist_val.mat', mdict={key: value for key, value in zip(names[:2], values[:2])})
-                    scipy.io.savemat('chip_plots/mlp.mat', mdict={key: value for key, value in zip(dict_names[2:], arrays[2:])})
+                    #scipy.io.savemat('chip_plots/mlp.mat', mdict={key: value for key, value in zip(dict_names[2:], arrays[2:])})
+                    scipy.io.savemat('chip_plots/mlp_first_layer_q4_act_1_acc_98.54.mat', mdict={dict_names[2]: arrays[2], dict_names[3]: arrays[3]})
 
                 if args.plot:
                     names = ['input', 'quantized_input', 'weights', 'output']

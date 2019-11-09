@@ -229,7 +229,8 @@ def get_gradients(model, args, val_loader):
             loss = criterion(output, label)
             batch_grads = torch.autograd.grad(loss, params)  # grads for a single batch
             for bg, grad in zip(batch_grads, grads):  # accumulate grads
-                grad += bg
+                # grad += bg  # TODO verify that abs values work better (typo in the paper??)
+                grad += torch.abs(bg)
     else:  # Imagenet
         for i, data in enumerate(val_loader):
             if args.dali:
@@ -247,7 +248,8 @@ def get_gradients(model, args, val_loader):
             loss = criterion(output, target)
             batch_grads = torch.autograd.grad(loss, params)  # grads for a single batch
             for bg, grad in zip(batch_grads, grads):  # accumulate grads
-                grad += bg
+                #grad += bg
+                grad += torch.abs(bg)
             if i == 10:
                 break
         if args.dali:
@@ -283,6 +285,7 @@ def distort_weights(params, args, noise=0.0, selective=False, grads=None, criter
                 else:
                     print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
                     raise(SystemExit)
+                # TODO normalize pctls across layers!!!!
                 p.data = torch.where(torch.abs(values) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
             else:
                 p.data.add_(p_noise)
@@ -589,7 +592,7 @@ def build_model(args):
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
-        print('LR', args.lr, 'wd', args.weight_decay, 'L1', args.L1, 'L3', args.L3)
+        print('LR', args.lr, 'wd', args.weight_decay, 'L1', args.L1, 'L3', args.L3, 'n_w', args.n_w)
         #for param_group in optimizer.param_groups:
             #param_group['lr'] = args.lr
             #param_group['weight_decay'] = args.weight_decay
@@ -757,8 +760,8 @@ def main():
                         merge_batchnorm(model, args)
 
                     if args.distort_w_test and args.var_name is not None:
-                        #noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
-                        noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                        noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                        #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                         accs = test_distortion(model, args, val_loader=val_loader, mode='weights', vars=noise_levels)
                         print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
                         acc_lists.append(accs)

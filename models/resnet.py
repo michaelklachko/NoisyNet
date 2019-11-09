@@ -9,6 +9,7 @@ import torch.utils.data
 from quant import QuantMeasure
 from plot_histograms import get_layers, plot_layers
 from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QuantMeasure
+import scipy.io
 
 
 class BasicBlock(nn.Module):
@@ -170,9 +171,9 @@ class ResNet(nn.Module):
                                    clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         for m in self.modules():
-            print(m)
+            #print(m)
             if isinstance(m, nn.Conv2d):
-                print('is instance of nn.Conv2D\n')
+                #print('is instance of nn.Conv2D\n')
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
             elif isinstance(m, nn.BatchNorm2d):
@@ -297,7 +298,8 @@ class ResNet(nn.Module):
 
             var_ = ''
             var_name = ''
-
+            scipy.io.savemat('chip_plots/r18_first_layer_q4_act_4_acc_{:.2f}.mat'.format(acc), mdict={names[1]: arrays[1], names[2]: arrays[2]})
+            raise(SystemExit)
             plot_layers(num_layers=len(layers), models=['plots/'], epoch=epoch, i=i, layers=layers,
                         names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.normalize)
             raise (SystemExit)

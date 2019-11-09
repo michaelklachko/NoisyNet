@@ -13,6 +13,7 @@ import utils
 from plot_histograms import plot, plot_layers, get_layers
 from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QuantMeasure
 from main import merge_batchnorm, distort_weights, test_distortion
+import scipy.io
 
 #CUDA_LAUNCH_BLOCKING=1
 
@@ -332,9 +333,9 @@ class Net(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
         self.relu = nn.ReLU()
 
-        self.quantize1 = QuantMeasure(args.q_a1, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
+        self.quantize1 = QuantMeasure(args.q_a1, stochastic=args.stochastic, pctl=args.pctl, max_value=1.0, debug=args.debug_quant)
         self.quantize2 = QuantMeasure(args.q_a2, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
-        self.quantize3 = QuantMeasure(args.q_a3, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
+        self.quantize3 = QuantMeasure(args.q_a3, stochastic=args.stochastic, pctl=args.pctl, max_value=args.act_max / (1. - args.dropout), debug=args.debug_quant)
         self.quantize4 = QuantMeasure(args.q_a4, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
 
         self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w1,
@@ -395,7 +396,7 @@ class Net(nn.Module):
             self.bias1 = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
             self.conv1_ = self.conv1_no_bias + self.bias1
             if args.plot or args.write:
-                arrays.append([self.bias1.half()])
+                arrays.append([self.bias1.half().detach().cpu().numpy()])
         else:
             self.conv1_ = self.conv1_no_bias
 
@@ -416,7 +417,7 @@ class Net(nn.Module):
             self.pool1_out = pool1
 
         if args.plot or args.write:
-            arrays.append([self.pool1_out.half()])
+            arrays.append([self.pool1_out.half().detach().cpu().numpy()])
 
         self.relu1_ = self.relu(self.pool1_out)
         if epoch == 0 and i == 0 and s == 0 and self.training:
@@ -459,7 +460,7 @@ class Net(nn.Module):
             self.bias2 = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
             self.conv2_ = self.conv2_no_bias + self.bias2
             if args.plot or args.write:
-                arrays.append([self.bias2.half()])
+                arrays.append([self.bias2.half().detach().cpu().numpy()])
         else:
             self.conv2_ = self.conv2_no_bias
 
@@ -480,7 +481,7 @@ class Net(nn.Module):
             self.pool2_out = pool2
 
         if args.plot or args.write:
-            arrays.append([self.pool2_out.half()])
+            arrays.append([self.pool2_out.half().detach().cpu().numpy()])
 
         self.relu2_ = self.relu(self.pool2_out)
         if epoch == 0 and i == 0 and s == 0 and self.training:
@@ -517,7 +518,7 @@ class Net(nn.Module):
             self.bias3 = self.bn3.bias.view(1, -1) - self.bn3.running_mean.data.view(1, -1) * self.bn3.weight.data.view(1, -1) / torch.sqrt(self.bn3.running_var.data.view(1, -1) + 0.0000001)
             self.linear1_ = self.linear1_no_bias + self.bias3
             if args.plot or args.write:
-                arrays.append([self.bias3.half()])
+                arrays.append([self.bias3.half().detach().cpu().numpy()])
         else:
             self.linear1_ = self.linear1_no_bias
 
@@ -532,7 +533,7 @@ class Net(nn.Module):
             self.linear1_out = linear1_out
 
         if args.plot or args.write:
-            arrays.append([self.linear1_out.half()])
+            arrays.append([self.linear1_out.half().detach().cpu().numpy()])
 
         self.relu3_ = self.relu(self.linear1_out)
 
@@ -569,7 +570,7 @@ class Net(nn.Module):
             self.bias4 = self.bn4.bias.view(1, -1) - self.bn4.running_mean.data.view(1, -1) * self.bn4.weight.data.view(1, -1) / torch.sqrt(self.bn4.running_var.data.view(1, -1) + 0.0000001)
             self.linear2_ = self.linear2_no_bias + self.bias4
             if args.plot or args.write:
-                arrays.append([self.bias4.half()])
+                arrays.append([self.bias4.half().detach().cpu().numpy()])
         else:
             self.linear2_ = self.linear2_no_bias
             self.bias4 = torch.Tensor([0])
@@ -585,7 +586,7 @@ class Net(nn.Module):
             self.linear2_out = linear2_out
 
         if args.plot or args.write:
-            arrays.append([self.linear2_out.half()])
+            arrays.append([self.linear2_out.half().detach().cpu().numpy()])
 
         if (args.plot and s == 0 and i == 0 and epoch in [0, 1, 5, 10, 50, 100, 150, 249] and self.training) or args.write or (args.resume is not None and args.plot):
 
@@ -625,7 +626,7 @@ class Net(nn.Module):
                 print('layer', k, names)
                 for j in range(len(names)):
                     # print('\t', names[j])
-                    layer.append([arrays[len(names) * k + j][0].detach().cpu().numpy()])
+                    layer.append([arrays[len(names) * k + j][0]])
                 layers.append(layer)
                 layer = []
 
@@ -651,6 +652,7 @@ class Net(nn.Module):
                             names=names, var=var_name, vars=[var_], infos=info, pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.normalize)
 
             if args.write and not self.training:
+                #scipy.io.savemat('chip_plots/convnet_first_layer_q4_act_1_acc_{:.2f}.mat'.format(acc), mdict={names[1]: arrays[1], names[2]: arrays[2]})
                 np.save(args.checkpoint_dir + 'layers.npy', np.array(layers))
                 print('\n\nnumpy arrays saved to', args.checkpoint_dir + 'layers.npy', '\n\n')
                 np.save(args.checkpoint_dir + 'array_names.npy', np.array(names))
@@ -662,6 +664,7 @@ class Net(nn.Module):
                     print('layers power saved to', args.checkpoint_dir + 'layers_power.npy', '\n\n')
 
             if (args.plot and args.resume is not None) or args.write:
+                scipy.io.savemat('chip_plots/convnet_first_layer_q4_act_1_acc_{:.2f}.mat'.format(acc), mdict={names[1]: arrays[1], names[2]: arrays[2]})
                 raise (SystemExit)
 
         return self.linear2_out
@@ -816,7 +819,7 @@ for current in current_vars:
     elif args.var_name == 'n_w':
         var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
     elif args.var_name == 'selected_weights':
-        var_list = [1, 2, 3, 5, 10, 20, 30]
+        var_list = [0, 1, 2, 3, 5, 10, 20, 30]
         acc_lists = []
     elif args.var_name == 'L2_w_max':
         var_list = [0.1]    #0.1 works fine for current=10 and init_w_max=0.2, no L2, and no act_max: w_min=-0.16, w_max=0.18, Acc 78.72 (epoch 225), power 3.45, noise 0.04 (0.02, 0.03, 0.04, 0.08)
@@ -990,8 +993,8 @@ for current in current_vars:
                     merge_batchnorm(model, args)
 
                 if args.distort_w_test and args.var_name != '':
-                    # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
-                    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                     accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
                     acc_lists.append(accs)
@@ -1068,8 +1071,8 @@ for current in current_vars:
                     print('\n\nFraction of clipped first layer weights: {:.2f}%\n\n'.format(fraction))
 
                 if args.distort_w_test:
-                    # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
-                    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                     accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     raise(SystemExit)
 
@@ -1529,8 +1532,8 @@ for current in current_vars:
                 te_acc = np.mean(te_accuracies)
 
                 if args.distort_w_test:
-                    # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
-                    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                     avg_te_acc_dist = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)
 
