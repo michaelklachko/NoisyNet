@@ -263,8 +263,49 @@ def distort_weights(params, args, noise=0.0, selective=False, grads=None, criter
     with torch.no_grad():
         if grads is None:
             grads = [0] * len(params)  # ugly placeholder
-        #print(len(grads))
+            pctls_normalized = [0] * len(params)
 
+        if selective:  # select thresholds for weight importance:
+            pctls = []
+            for p, g in zip(params, grads):
+                if criteria == 'grad_magnitude':
+                    pctl, _ = torch.kthvalue(torch.abs(g.view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
+                elif criteria == 'weight_magnitude':
+                    pctl, _ = torch.kthvalue(torch.abs(p.view(-1)), int(p.numel() * (100 - args.selected_weights) / 100.0))
+                elif criteria == 'combined':  # first order term of Taylor expansion - product of weight derivative and weight value
+                    pctl, _ = torch.kthvalue(torch.abs((g * p).view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
+                else:
+                    print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
+                    raise(SystemExit)
+                pctls.append(pctl)
+
+            # Normalize pctls across layers:
+            pctl_norm = torch.norm(torch.tensor(pctls), p=2)
+            #pctl_norm2 = torch.sqrt(torch.sum(torch.tensor([t.pow(2) for t in pctls])))
+            #print('\n\n\nnorm1, norm2:', pctl_norm1.item(), pctl_norm2.item())
+            pctls_normalized = [p/pctl_norm for p in pctls]
+
+        for p, g, pctl in zip(params, grads, pctls_normalized):
+            p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-noise, noise)
+            if selective:  # distort most important weights less
+                if criteria == 'grad_magnitude':
+                    # distort the weights with top n gradients less than the rest of the weights
+                    values = g.data
+                elif criteria == 'weight_magnitude':
+                    # distort these largest weights less than the rest of the weights
+                    values = p.clone().data  # torch.where issues when using same data in assign and condition
+                elif criteria == 'combined':  # first order term of Taylor expansion - product of weight derivative and weight value
+                    # distort the weights with top n (weight * gradients)  less than the rest of the weights
+                    values = g.data * p.clone().data  # torch.where issues when using same data in assign and condition
+                else:
+                    print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
+                    raise(SystemExit)
+                # reduce distortion of selected weights by args.selected_weights_noise_scale
+                p.data = torch.where(torch.abs(values) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
+            else:
+                p.data.add_(p_noise)
+
+        '''
         for p, g in zip(params, grads):
             p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-noise, noise)
             if selective:  # distort most important weights less
@@ -290,6 +331,7 @@ def distort_weights(params, args, noise=0.0, selective=False, grads=None, criter
                 p.data = torch.where(torch.abs(values) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
             else:
                 p.data.add_(p_noise)
+        '''
 
 
 def test_distortion(model, args, val_loader=None, mode='weights', vars=None):

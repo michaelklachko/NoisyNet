@@ -27,10 +27,10 @@ class BasicBlock(nn.Module):
         #self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv1 = NoisyConv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                  clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-
+        self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = NoisyConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                  clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        self.bn1 = nn.BatchNorm2d(planes)
+        #self.bn1 = nn.BatchNorm2d(planes)
         self.bn2 = nn.BatchNorm2d(planes)
 
         if downsample is not None:
