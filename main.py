@@ -74,6 +74,7 @@ def parse_args():
     parser.add_argument('--selection_criteria', type=str, default=0, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
     parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
     parser.add_argument('--debug_noise', dest='debug_noise', action='store_true', help='debug when adding noise to weights')
+    parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -836,6 +837,12 @@ def main():
 
     if args.resume:
         model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
+
+        for param_group in optimizer.param_groups:
+            if args.weight_decay != param_group['weight_decay']:
+                print("\n\nRestored L2: param_group['weight_decay'] {}, Specified L2: args.weight_decay {}\n\nAdjusting...\n\n\n".format(
+                    param_group['weight_decay'], args.weight_decay))
+                param_group['weight_decay'] = args.weight_decay
 
         if args.fp16 and not args.amp:
             model = model.half()
