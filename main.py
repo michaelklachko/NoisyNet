@@ -286,6 +286,7 @@ def distort_weights(params, args, noise=0.0, selective=False, grads=None, criter
                     print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
                     raise(SystemExit)
                 # TODO normalize pctls across layers!!!!
+                raise (SystemExit)
                 p.data = torch.where(torch.abs(values) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
             else:
                 p.data.add_(p_noise)
@@ -813,8 +814,8 @@ def main():
                     p.data.clamp_(-0.25, 0.25)
 
         if args.distort_w_test or args.distort_act_test:
-            # noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
-            noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+            noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+            #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
             if args.distort_w_test:
                 mode = 'weights'
             if args.distort_act_test:

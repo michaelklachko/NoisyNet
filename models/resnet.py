@@ -276,6 +276,7 @@ class ResNet(nn.Module):
                 names = ['input', 'weights', 'vmm']
             else:
                 names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
+                names = ['input', 'weights', 'vmm', 'source']
 
             if args.merge_bn:
                 names.append('bias')
@@ -298,8 +299,8 @@ class ResNet(nn.Module):
 
             var_ = ''
             var_name = ''
-            scipy.io.savemat('chip_plots/r18_first_layer_q4_act_4_acc_{:.2f}.mat'.format(acc), mdict={names[1]: arrays[1], names[2]: arrays[2]})
-            raise(SystemExit)
+            #scipy.io.savemat('chip_plots/r18_first_layer_q4_act_4_acc_{:.2f}.mat'.format(acc), mdict={names[1]: arrays[1], names[2]: arrays[2]})
+            #raise(SystemExit)
             plot_layers(num_layers=len(layers), models=['plots/'], epoch=epoch, i=i, layers=layers,
                         names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.normalize)
             raise (SystemExit)

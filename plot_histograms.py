@@ -23,6 +23,51 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
         if basic:
             return
 
+        if layer == 'conv':
+            # calculating sums of currents along source lines:
+            # assume input shape (256, 3, 32, 32) and weights shape (64, 3, 5, 5)
+            # we need to calculate for every input pixel (input current) the sum of products of its values and all the weights it will encounter along the line
+            # each input pixel will encounter exactly 64 weights (one per output feature map), and:
+            # In any given single input feature map, there will be N sets of 64 weights for each pixel where N = 5x5
+            # Different input feature maps will have different sets of 5x5x64 weights
+            # Sums of products of a pixel with 64 weights is a sum of 64 weights multiply with the pixel
+            # Therefore, we will have 3 sets of weights and 3 sets of pixels (3, 25) and (3, 256*32*32)
+            # and the output will be 3 sets of 25*256*32*32 combined, which we will plot as a histogram
+
+            # 1. transpose inputs to (3, 256*32*32) and weights to (3, 64, 5, 5)
+            # 2. reshape weights to (3, 64, 25) and use abs values
+            # 3. reduce weights to (3, 1, 25)
+            # 4. expand inputs to (3, 256*32*32, 1)
+            # 5. multiply them element wise (hadamard product)
+            # 5. the result will be (3, 256*32*32, 25), which we flatten and plot
+
+            '''
+            weight_sums = torch.abs(weight).sum((1, 2, 3))  # assuming weights shape: (out_fms, in_fms, x, y)
+            # now multiply every pixel in every input feature map by the corersponding value in weight_sums vector:
+            # e.g. 64 input feature maps, 20x20 pixels each, and 64 corresponding values in weight_sums vector
+            # the result will be 64x20x20 scaled values (each input feature map has its own unique scaling factor)
+            # implementation: first reshape (expand) weight_sums to (1, 64, 1, 1) , then multiply (bs, 64, x, y) by this vector
+            '''
+            in_fms = list(input.shape)[1]
+            out_fms = list(weight.shape)[0]
+            input_t = torch.transpose(input, 0, 1).reshape(in_fms, -1, 1)
+            weight_t = torch.transpose(weight, 0, 1).reshape(in_fms, out_fms, -1)
+            weight_sums = torch.abs(weight_t).sum(1, keepdim=True)
+            source_sums = input_t * weight_sums
+            #print('\n\ninput {} weight {} input_t {} weight_t {} weight_sums {} source_sums {}\n\n'.format(
+                #list(input.shape), list(weight.shape), list(input_t.shape), list(weight_t.shape), list(weight_sums.shape), list(source_sums.shape)))
+
+        elif layer == 'linear':
+            # Input: [16, 512] weights: [1000, 512] output: [16, 1000]
+            # make 512 weight sums (abs values) weight_sums: (1, 512)
+            # make 16 * 512 products
+            weight_sums = torch.abs(weight).sum(0, keepdim=True)
+            source_sums = weight_sums * input
+            #print('\n\ninput {} weight {} weight_sums {} source_sums {}\n\n'.format(
+                #list(input.shape), list(weight.shape), list(weight_sums.shape), list(source_sums.shape)))
+        arrays.append([source_sums.half().detach().cpu().numpy()])
+        return
+
         blocks = []
         pos_blocks = []
         neg_blocks = []
@@ -87,7 +132,12 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
         w_neg = weight.clone()
         w_neg[w_neg >= 0] = 0
         if layer == 'conv':
-            weight_sums = torch.abs(weight).sum((1, 2, 3))
+            weight_sums = torch.abs(weight).sum((1, 2, 3))  # assuming weights shape: (out_fms, in_fms, x, y)
+            # now multiply every pixel in every input feature map by the corersponding value in weight_sums vector:
+            # e.g. 64 input feature maps, 20x20 pixels each, and 64 corresponding values in weight_sums vector
+            # the result will be 64x20x20 scaled values (each input feature map has its own unique scaling factor)
+            # implementation: first reshape (expand) weight_sums to (1, 64, 1, 1) , then multiply (bs, 64, x, y) by this vector
+            source_values = weight_sums.view(1, len(weight_sums), 1, 1) * input
             pos = F.conv2d(input, w_pos, stride=stride, padding=padding)
             neg = F.conv2d(input, w_neg, stride=stride, padding=padding)
             weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
@@ -143,16 +193,15 @@ def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title=
     plt.savefig(path, dpi=120, bbox_inches='tight')
 
 
-def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, name=None, max_input=0, max_weight=0, infos=None, pctl=99.9, labels=['1'],
-              log=True, normalize=True):
+def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=None, name=None, infos=None, labels=['1'],
+              log=True):
     ax = plt.subplot2grid((rows, columns), (r, c))
     min_value = max_value = 0
-    if range_ is None:  #TODO what is this for???
+    if range_ is None and len(arrays) > 1:  # if overlapping histograms, use largest range
         for a in arrays:
             min_value = min(min_value, np.min(a))
             max_value = max(max_value, np.max(a))
         range_ = [min_value, max_value]
-    range_ = None
 
     if len(arrays) == 1:
         histtype = 'bar'
@@ -162,30 +211,16 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
         histtype = 'step'
         alpha = 1  # 2.0 / len(arrays)
 
-    thr_neg = 0
-    thr_pos = 0
     show = True
 
     for array, label, info, color in zip(arrays, labels, infos, ['blue', 'red', 'green', 'black', 'magenta', 'cyan', 'orange', 'yellow', 'gray']):
-        if normalize:
-            # thr = max(abs(thr_neg), thr_pos)
-            if name != 'input' and name != 'weights':
-                if "weight" in name:
-                    array = array / max_weight
-                else:
-                    array = array / (max_weight * max_input)
-                thr_neg = np.percentile(array, 100 - pctl)
-                thr_pos = np.percentile(array, pctl)
-
-            if r == 0:  # only display accuracy on first row figures
-                if "weight" in name:
-                    label = label + ' {:.1f}%  {:.2f} {:.2f}'.format(pctl, thr_neg, thr_pos)
-
         if 'power' in name:
             label = info[1] + label
         if show and 'input' in name:
             label = info[0] + label
             show = False
+        if 'source' in name or 'vmm' in name or 'pre' in name:
+            label = 'min: {:.2f} max: {:.2f}'.format(np.min(array), np.max(array))
 
         ax.hist(array.ravel(), alpha=alpha, bins=bins, density=False, color=color, range=range_, histtype=histtype, label=label, linewidth=1.5)
 
@@ -197,7 +232,7 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
     plt.yticks(fontsize=15)
     if log:
         plt.semilogy()
-    ax.legend(loc='upper right', prop={'size': 15})
+    ax.legend(loc='upper right', prop={'size': 16})
 
 
 def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, labels=['1'], normalize=False):
@@ -217,20 +252,30 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
             if normalize:
                 if name == 'input':
                     max_input = np.max(array[0])
+                    if max_input == 0:
+                        print('\n\nLayer {}, array {} (column {}) error when normalizing the array\nmax_input = {} = zero\n'
+                              '\nexiting...\n\n'.format(r, name, c, max_input))
+                        raise(SystemExit)
                     array[0] = array[0] / max_input
-                if name == 'weights':
+                elif name == 'weights':
                     thr_neg = np.percentile(array[0], 100 - pctl)
                     thr_pos = np.percentile(array[0], pctl)
                     thr = max(abs(thr_neg), thr_pos)
                     # print('\nthr:', thr)
+                    # TODO is the below assignment safe???
                     array[0][array[0] > thr] = thr
                     array[0][array[0] < -thr] = -thr
                     # print(name, 'np.max(array)', np.max(array[0]))
                     # print('before\n', array[0].ravel()[20:40])
+                    if thr == 0:
+                        print('\n\nLayer {}, array {} (column {}) error when normalizing the array\nmax_weight = {} = zero\n'
+                              'weights are clipped at ({}, {}), pctl: {}\nexiting...\n\n'.format(thr_neg, thr_pos, pctl, r, name, c, thr))
+                        raise(SystemExit)
                     array[0] = array[0] / thr
+                else:
+                    array[0] = array[0] / (max_input * thr)  # TODO fragile - inputs and weights must be the first two arrays in each layer
                 # print('after\n', array[0].ravel()[20:40])
-            place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r) + ' ', name=name, infos=layer_info, pctl=pctl, max_input=max_input,
-                      max_weight=thr, labels=labels, normalize=normalize)
+            place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r) + ' ', name=name, infos=layer_info, labels=labels)
     print('\n\nSaving plot to {}\n'.format(path + filename))
     plt.savefig(path + filename, dpi=120, bbox_inches='tight')
     print('\nDone!\n')
@@ -269,8 +314,11 @@ def plot_layers(num_layers=4, models=None, epoch=0, i=0, layers=None, names=None
             for l in range(num_layers):
                 for col in range(len(model_layers[l])):
                     layers[l][col].append(model_layers[l][col][0])
-                '''
+
                 if 'noise' in names:  # add noise/signal ratio array to each layer, if noise present
+                    print('\n\nNeed to fix noise plotting! Exiting...\n\n')
+                    raise(SystemExit)
+                    '''
                     out = model_layers[l][2][0]  # TODO fix this fragility
                     noise = model_layers[l][-1][0]  # assume vmm out to be 3rd array in layer and noise last array:
                     full_range = np.max(out) - np.min(out)
