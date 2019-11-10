@@ -10,44 +10,40 @@ import torch.nn.functional as F
 
 
 def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv', basic=False, debug=False):
-    print('\n\nInput:', list(input.shape), 'weights:', list(weight.shape), 'output:', list(output.shape), 'layer type:', layer)
+    print('\nLayer type:', layer, 'Input:', list(input.shape), 'weights:', list(weight.shape), 'output:', list(output.shape))#,
+          #'\ndot product vector length:', np.prod(list(weight.shape)[1:]), 'fanout:', list(weight.shape)[0])
     with torch.no_grad():
-        print('\n\nLayer:', layer)
         arrays.append([input.half().detach().cpu().numpy()])
-        print('adding input, len(arrays):', len(arrays))
         arrays.append([weight.half().detach().cpu().numpy()])
-        print('adding weights, len(arrays):', len(arrays))
         arrays.append([output.half().detach().cpu().numpy()])
-        print('adding vmms, len(arrays):', len(arrays))
+        if debug:
+            print('\n\nLayer:', layer)
+            print('adding input, len(arrays):', len(arrays))
+            print('adding weights, len(arrays):', len(arrays))
+            print('adding vmms, len(arrays):', len(arrays))
 
         if basic:
             return
 
         if layer == 'conv':
-            # calculating sums of currents along source lines:
-            # assume input shape (256, 3, 32, 32) and weights shape (64, 3, 5, 5)
-            # we need to calculate for every input pixel (input current) the sum of products of its values and all the weights it will encounter along the line
-            # each input pixel will encounter exactly 64 weights (one per output feature map), and:
-            # In any given single input feature map, there will be N sets of 64 weights for each pixel where N = 5x5
-            # Different input feature maps will have different sets of 5x5x64 weights
-            # Sums of products of a pixel with 64 weights is a sum of 64 weights multiply with the pixel
-            # Therefore, we will have 3 sets of weights and 3 sets of pixels (3, 25) and (3, 256*32*32)
-            # and the output will be 3 sets of 25*256*32*32 combined, which we will plot as a histogram
+            """
+            calculating sums of currents along source lines:
+            assume input shape (256, 3, 32, 32) and weights shape (64, 3, 5, 5)
+            we need to calculate for every input pixel (input current) the sum of products of its values and all the weights it will encounter along the line
+            each input pixel will encounter exactly 64 weights (one per output feature map), and:
+            In any given single input feature map, there will be N sets of 64 weights for each pixel where N = 5x5
+            Different input feature maps will have different sets of 5x5x64 weights
+            Sums of products of a pixel with 64 weights is a sum of 64 weights multiply with the pixel
+            Therefore, we will have 3 sets of weights and 3 sets of pixels (3, 25) and (3, 256*32*32)
+            and the output will be 3 sets of 25*256*32*32 combined, which we will plot as a histogram
 
-            # 1. transpose inputs to (3, 256*32*32) and weights to (3, 64, 5, 5)
-            # 2. reshape weights to (3, 64, 25) and use abs values
-            # 3. reduce weights to (3, 1, 25)
-            # 4. expand inputs to (3, 256*32*32, 1)
-            # 5. multiply them element wise (hadamard product)
-            # 5. the result will be (3, 256*32*32, 25), which we flatten and plot
-
-            '''
-            weight_sums = torch.abs(weight).sum((1, 2, 3))  # assuming weights shape: (out_fms, in_fms, x, y)
-            # now multiply every pixel in every input feature map by the corersponding value in weight_sums vector:
-            # e.g. 64 input feature maps, 20x20 pixels each, and 64 corresponding values in weight_sums vector
-            # the result will be 64x20x20 scaled values (each input feature map has its own unique scaling factor)
-            # implementation: first reshape (expand) weight_sums to (1, 64, 1, 1) , then multiply (bs, 64, x, y) by this vector
-            '''
+            1. transpose inputs to (3, 256*32*32) and weights to (3, 64, 5, 5)
+            2. reshape weights to (3, 64, 25) and use abs values
+            3. reduce weights to (3, 1, 25)
+            4. expand inputs to (3, 256*32*32, 1)
+            5. multiply them element wise (hadamard product)
+            5. the result will be (3, 256*32*32, 25), which we flatten and plot
+            """
             in_fms = list(input.shape)[1]
             out_fms = list(weight.shape)[0]
             input_t = torch.transpose(input, 0, 1).reshape(in_fms, -1, 1)
@@ -219,8 +215,10 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
         if show and 'input' in name:
             label = info[0] + label
             show = False
-        if 'source' in name or 'vmm' in name or 'pre' in name:
-            label = 'min: {:.2f} max: {:.2f}'.format(np.min(array), np.max(array))
+        if 'input' in name or 'weight' in name:
+            label = None
+        else:
+            label = '({:.1f}, {:.1f})'.format(np.min(array), np.max(array))
 
         ax.hist(array.ravel(), alpha=alpha, bins=bins, density=False, color=color, range=range_, histtype=histtype, label=label, linewidth=1.5)
 
@@ -228,8 +226,8 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
     # plt.xlabel('Value', fontsize=16)
     # plt.ylabel('Frequency', fontsize=16)
     # plt.legend(loc='upper right')
-    plt.xticks(fontsize=15)
-    plt.yticks(fontsize=15)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
     if log:
         plt.semilogy()
     ax.legend(loc='upper right', prop={'size': 16})
