@@ -11,6 +11,7 @@ from torch.distributions.uniform import Uniform
 # torch.manual_seed(1)
 # torch.backends.cudnn.deterministic = True
 
+
 def add_noise_calculate_power(self, args, arrays, input, weights, output, layer_type='conv', i=0, layer_num=0, merged_dac=True):
     if args.distort_act:
         with torch.no_grad():
@@ -277,27 +278,15 @@ class QuantMeasure(nn.Module):
 
 
 class AddNoise(InplaceFunction):
-
     @classmethod
-    def forward(cls, ctx, input, noise=0, clip=0, debug=False):
-
+    def forward(cls, ctx, input, noise=0, debug=False):
         output = input.clone()
-
-        if debug:
-            print('\n\nAdding Noise:\ninput\n', input[0, 0])
-
         with torch.no_grad():
             # unoise = output * torch.cuda.FloatTensor(output.size()).uniform_(-noise, noise)
             unoise = output * output.new_empty(output.shape).uniform_(-noise, noise)
-            # print('\nnoise\n', noise[0, 0])
             output.add_(unoise)
             if debug:
-                print('added {:d}% of noise:\n{}\n'.format(int(noise * 100), output[0, 0]))
-            if clip > 0:
-                output.clamp_(-clip, clip)
-                if debug:
-                    print('clipped at {:.2f}:\n{}\n'.format(clip, output[0, 0]))
-
+                print('\n\nAdded {:d}% of noise\n\nBefore:\n{}\nNoise:\n{}\nAfter:\n{}\n\n'.format(int(noise * 100), input[0, 0], noise[0, 0], output[0, 0]))
         return output
 
     @staticmethod

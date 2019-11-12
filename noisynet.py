@@ -290,7 +290,7 @@ parser.add_argument('--n_w4', type=float, default=0, metavar='', help='fourth la
 parser.add_argument('--n_w_test', type=float, default=0, metavar='', help='weight noise to add during test')
 parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
 parser.add_argument('--noise_values', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
-parser.add_argument('--selection_criteria', type=str, default='combined', metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
+parser.add_argument('--selection_criteria', type=str, default=None, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
 parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
 parser.add_argument('--stochastic', type=float, default=0.5, metavar='', help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
@@ -818,8 +818,10 @@ for current in current_vars:
         var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
     elif args.var_name == 'n_w':
         var_list = [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+        var_list = [0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
     elif args.var_name == 'selected_weights':
         var_list = [0, 1, 2, 3, 5, 10, 20, 30]
+        var_list = [0, 1, 2, 5, 10]
         acc_lists = []
     elif args.var_name == 'L2_w_max':
         var_list = [0.1]    #0.1 works fine for current=10 and init_w_max=0.2, no L2, and no act_max: w_min=-0.16, w_max=0.18, Acc 78.72 (epoch 225), power 3.45, noise 0.04 (0.02, 0.03, 0.04, 0.08)
@@ -995,6 +997,15 @@ for current in current_vars:
                 if args.distort_w_test and args.var_name != '':
                     noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    """
+                    if args.selection_criteria is None:
+                        for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
+                            print('\n\n\n\n************************* Selection Criteria', args.selection_criteria, ' ***********************\n\n\n\n')
+                            accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
+                        args.selection_criteria = None
+                    else:
+                        accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
+                    """
                     accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
                     acc_lists.append(accs)
@@ -1073,8 +1084,16 @@ for current in current_vars:
                 if args.distort_w_test:
                     noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
-                    accs = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
-                    raise(SystemExit)
+                    """
+                    if args.selection_criteria is None:
+                        for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
+                            print('\n\n\n\n************************* Selection Criteria', args.selection_criteria, ' ***********************\n\n\n\n')
+                            test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
+                    else:
+                        test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
+                    raise (SystemExit)
+                    """
+                    test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
 
             if s == 0:
                 utils.print_model(model, args, full=args.debug)

@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument('--loss_scale', default=128.0, type=float, help='when using FP16 precision, scale loss by this value')
     parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
     parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
-    parser.add_argument('--selection_criteria', type=str, default=0, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
+    parser.add_argument('--selection_criteria', type=str, default=None, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
     parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
     parser.add_argument('--debug_noise', dest='debug_noise', action='store_true', help='debug when adding noise to weights')
     parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
@@ -259,80 +259,59 @@ def get_gradients(model, args, val_loader):
     return grads
 
 
-def distort_weights(params, args, noise=0.0, selective=False, grads=None, criteria='grad_magnitude'):
+def select_values(args, params, grads):
+    pctls = []
+    values_list = []
+    for p, g in zip(params, grads):
+        if args.selection_criteria == 'grad_magnitude':
+            pctl, _ = torch.kthvalue(torch.abs(g.view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
+            # distort the weights with top n gradients less than the rest of the weights
+            values = g.data
+        elif args.selection_criteria == 'weight_magnitude':
+            # choose top K largest weights:
+            pctl, _ = torch.kthvalue(torch.abs(p.view(-1)), int(p.numel() * (100 - args.selected_weights) / 100.0))
+            # distort these largest weights less than the rest of the weights
+            values = p.clone().data  # torch.where issues when using same data in assign and condition
+        elif args.selection_criteria == 'combined':  # first order term of Taylor expansion - product of weight derivative and weight value
+            pctl, _ = torch.kthvalue(torch.abs((g * p).view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
+            # distort the weights with top n (weight * gradients)  less than the rest of the weights
+            values = g.data * p.clone().data  # torch.where issues when using same data in assign and condition
+        else:
+            print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(args.selection_criteria))
+            raise (SystemExit)
+        pctls.append(pctl)
+        values_list.append(values)
+
+    return pctls, values_list
+
+
+def distort_weights(args, params, grads=None, values=None, pctls=None, noise=0.0):
     # np.set_printoptions(precision=4, linewidth=200, suppress=True)
+    '''
+    # Normalize pctls across layers:
+    pctl_norm = torch.norm(torch.tensor(pctls), p=2)
+    #pctl_norm2 = torch.sqrt(torch.sum(torch.tensor([t.pow(2) for t in pctls])))
+    #print('\n\n\nnorm1, norm2:', pctl_norm1.item(), pctl_norm2.item())
+    pctls_normalized = [p/pctl_norm for p in pctls]
+    print('\n\nBefore normalization: {}\npctl norm: {:.3f}\nAfter normalization: {}\n\n'.format(
+        ['{:.3f}'.format(p.item()) for p in pctls], pctl_norm, ['{:.3f}'.format(p.item()) for p in pctls_normalized]))
+    '''
     with torch.no_grad():
         if grads is None:
             grads = [0] * len(params)  # ugly placeholder
-            pctls_normalized = [0] * len(params)
+            # pctls_normalized = [0] * len(params)
+        if values is None:
+            values = [0] * len(params)
+        if pctls is None:
+            pctls = [0] * len(params)
 
-        if selective:  # select thresholds for weight importance:
-            pctls = []
-            for p, g in zip(params, grads):
-                if criteria == 'grad_magnitude':
-                    pctl, _ = torch.kthvalue(torch.abs(g.view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
-                elif criteria == 'weight_magnitude':
-                    pctl, _ = torch.kthvalue(torch.abs(p.view(-1)), int(p.numel() * (100 - args.selected_weights) / 100.0))
-                elif criteria == 'combined':  # first order term of Taylor expansion - product of weight derivative and weight value
-                    pctl, _ = torch.kthvalue(torch.abs((g * p).view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
-                else:
-                    print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
-                    raise(SystemExit)
-                pctls.append(pctl)
-
-            # Normalize pctls across layers:
-            pctl_norm = torch.norm(torch.tensor(pctls), p=2)
-            #pctl_norm2 = torch.sqrt(torch.sum(torch.tensor([t.pow(2) for t in pctls])))
-            #print('\n\n\nnorm1, norm2:', pctl_norm1.item(), pctl_norm2.item())
-            pctls_normalized = [p/pctl_norm for p in pctls]
-
-        for p, g, pctl in zip(params, grads, pctls_normalized):
+        for p, g, v, pctl in zip(params, grads, values, pctls):
             p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-noise, noise)
-            if selective:  # distort most important weights less
-                if criteria == 'grad_magnitude':
-                    # distort the weights with top n gradients less than the rest of the weights
-                    values = g.data
-                elif criteria == 'weight_magnitude':
-                    # distort these largest weights less than the rest of the weights
-                    values = p.clone().data  # torch.where issues when using same data in assign and condition
-                elif criteria == 'combined':  # first order term of Taylor expansion - product of weight derivative and weight value
-                    # distort the weights with top n (weight * gradients)  less than the rest of the weights
-                    values = g.data * p.clone().data  # torch.where issues when using same data in assign and condition
-                else:
-                    print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
-                    raise(SystemExit)
+            if args.selected_weights > 0:
                 # reduce distortion of selected weights by args.selected_weights_noise_scale
-                p.data = torch.where(torch.abs(values) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
+                p.data = torch.where(torch.abs(v) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
             else:
                 p.data.add_(p_noise)
-
-        '''
-        for p, g in zip(params, grads):
-            p_noise = p * torch.cuda.FloatTensor(p.size()).uniform_(-noise, noise)
-            if selective:  # distort most important weights less
-                if criteria == 'grad_magnitude':
-                    pctl, _ = torch.kthvalue(torch.abs(g.view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
-                    # distort the weights with top n gradients less than the rest of the weights
-                    values = g.data
-                elif criteria == 'weight_magnitude':
-                    # choose top K largest weights:
-                    pctl, _ = torch.kthvalue(torch.abs(p.view(-1)), int(p.numel() * (100 - args.selected_weights) / 100.0))
-                    # distort these largest weights less than the rest of the weights
-                    values = p.clone().data  # torch.where issues when using same data in assign and condition
-                elif criteria == 'combined':  # first order term of Taylor expansion - product of weight derivative and weight value
-                    pctl, _ = torch.kthvalue(torch.abs((g * p).view(-1)), int(g.numel() * (100 - args.selected_weights) / 100.0))
-                    # distort the weights with top n (weight * gradients)  less than the rest of the weights
-                    values = g.data * p.clone().data  # torch.where issues when using same data in assign and condition
-                # reduce distortion of selected weights by args.selected_weights_noise_scale
-                else:
-                    print('\n\nUnknown selection criteria: {}, Exiting...\n\n'.format(criteria))
-                    raise(SystemExit)
-                # TODO normalize pctls across layers!!!!
-                raise (SystemExit)
-                p.data = torch.where(torch.abs(values) < pctl, p.data + p_noise, p.data + p_noise * args.selected_weights_noise_scale)
-            else:
-                p.data.add_(p_noise)
-        '''
 
 
 def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
@@ -358,8 +337,11 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
 
     if args.selected_weights > 0:
         grads = get_gradients(model, args, val_loader)
+        pctls, values = select_values(args, params, grads)
     else:
         grads = None
+        pctls = None
+        values = None
 
     for noise in vars:
         print('\n\nDistorting {} by {:d}%'.format(mode, int(noise * 100)))
@@ -370,7 +352,7 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
 
         for s in range(args.num_sims):
             if mode == 'weights':
-                distort_weights(params, args, noise=noise, selective=args.selected_weights > 0, grads=grads, criteria=args.selection_criteria)
+                distort_weights(args, params, grads=grads, values=values, pctls=pctls, noise=noise)
             if isinstance(val_loader, tuple):   #TODO cifar-10
                 inputs, labels = val_loader
                 te_accs = []
@@ -786,6 +768,7 @@ def main():
             var_list = [0.87, 0.88, 0.89, 0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96]
         if args.var_name == 'selected_weights':
             var_list = [0, 1, 2, 3, 5, 10, 20, 30]
+            var_list = [1, 2, 5, 10]
             acc_lists = []
 
         for var in var_list:
@@ -806,6 +789,15 @@ def main():
                     if args.distort_w_test and args.var_name is not None:
                         noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
                         #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                        """
+                        if args.selection_criteria is None:
+                            for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
+                                print('\n\n\n\n************************* Selection Criteria', args.selection_criteria, ' ***********************\n\n\n\n')
+                                test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+                        else:
+                            test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+                        raise (SystemExit)
+                        """
                         accs = test_distortion(model, args, val_loader=val_loader, mode='weights', vars=noise_levels)
                         print('\n\n{:>2d}% selected weights: {}'.format(int(var), accs))
                         acc_lists.append(accs)
@@ -869,8 +861,16 @@ def main():
                 mode = 'weights'
             if args.distort_act_test:
                 mode = 'acts'
-            test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+            """
+            if args.selection_criteria is None:
+                for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
+                    print('\n\n\n\n************************* Selection Criteria', args.selection_criteria, ' ***********************\n\n\n\n')
+                    test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+            else:
+                test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
             raise(SystemExit)
+            """
+            test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
 
         print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
         validate(val_loader, model, args, epoch=best_epoch, plot_acc=best_acc)
