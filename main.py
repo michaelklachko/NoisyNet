@@ -363,7 +363,7 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
                     pred = output.data.max(1)[1]
                     te_acc = pred.eq(label.data).cpu().sum().numpy() * 100.0 / args.batch_size
                     te_accs.append(te_acc)
-                te_acc_d = np.mean(te_accs)
+                te_acc_d = np.mean(te_accs, dtype=np.float64)
             else:
                 te_acc_d = validate(val_loader, model, args)
 
@@ -378,7 +378,7 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
             if args.debug:
                 print('restored:\n{}\n'.format(model.module.conv1.weight.data.detach().cpu().numpy()[0, 0, 0]))
 
-        avg_te_acc_dist = np.mean(te_acc_dist)
+        avg_te_acc_dist = np.mean(te_acc_dist, dtype=np.float64)
         error_bars.append(te_acc_dist)
         acc_d.append(avg_te_acc_dist)
         print('\nNoise {:>5.2f}: {}  avg acc {:>5.2f}'.format(noise, [float('{:.2f}'.format(v)) for v in te_acc_dist], avg_te_acc_dist))
@@ -540,7 +540,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                             if args.debug:
                                 print('(val) running_list:', m.running_list, 'running_max:', m.running_max)
 
-        mean_acc = np.mean(te_accs)
+        mean_acc = np.mean(te_accs, dtype=np.float64)
         print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
         if args.dali:
             val_loader.reset()
@@ -704,7 +704,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
 
             if i % args.print_freq == 0:
                 print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {} | {:.2f}'.format(
-                    str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs)))
+                    str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs, dtype=np.float64)))
 
             if args.q_a > 0 and args.calculate_running and epoch == start_epoch and i == 5:
                 print('\n')
@@ -820,7 +820,7 @@ def main():
             if args.distort_w_test and args.var_name is not None:  # ugly...
                 continue
 
-            total_list.append((np.mean(acc_list), np.min(acc_list), np.max(acc_list)))
+            total_list.append((np.mean(acc_list, dtype=np.float64), np.min(acc_list), np.max(acc_list)))
             print('\n{:d} runs:  {} {} {:.2f} ({:.2f}/{:.2f})'.format(args.num_sims, args.var_name, var, *total_list[-1]))
         for var, (mean, min, max) in zip(var_list, total_list):
             print('{} {} acc {:.2f} ({:.2f}/{:.2f})'.format(args.var_name, var, mean, min, max))  #raise(SystemExit)

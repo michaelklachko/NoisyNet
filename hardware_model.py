@@ -299,12 +299,11 @@ class AddNoise(InplaceFunction):
 class NoisyConv2d(nn.Conv2d):
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=False,
-                 num_bits=0, num_bits_weight=0, clip=0, noise=0.5, test_noise=0, stochastic=True, debug=False):
+                 num_bits=0, num_bits_weight=0, noise=0.5, test_noise=0, stochastic=True, debug=False):
         super(NoisyConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
         self.num_bits = num_bits
         self.fms = out_channels
         self.fs = kernel_size
-        self.clip = clip
         self.noise = noise
         self.num_bits_weight = num_bits_weight
         if num_bits > 0:
@@ -336,14 +335,14 @@ class NoisyConv2d(nn.Conv2d):
                 #bias = quantize(self.bias, num_bits=self.num_bits_weight, min_value=-1.0, max_value=1.0, stochastic=self.stochastic)
 
         elif self.test_noise > 0 and not self.training:  #TODO use no-track_running_stats if using bn, or adjust bn params!
-            weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+            weight = AddNoise().apply(self.weight, self.test_noise, self.debug)
             if self.bias is not None:
-                bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+                bias = AddNoise().apply(self.bias, self.test_noise, self.debug)
 
         elif self.noise > 0 and self.training:
-            weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            weight = AddNoise().apply(self.weight, self.noise, self.debug)
             if self.bias is not None:
-                bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+                bias = AddNoise().apply(self.bias, self.noise, self.debug)
 
         output = F.conv2d(qinput, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
@@ -352,13 +351,12 @@ class NoisyConv2d(nn.Conv2d):
 
 class NoisyLinear(nn.Linear):
 
-    def __init__(self, in_features, out_features, bias=False, num_bits=0, num_bits_weight=0, clip=0, noise=0, test_noise=0, stochastic=True, debug=False):
+    def __init__(self, in_features, out_features, bias=False, num_bits=0, num_bits_weight=0, noise=0, test_noise=0, stochastic=True, debug=False):
         super(NoisyLinear, self).__init__(in_features, out_features, bias)
         self.fc_in = in_features
         self.fc_out = out_features
         self.num_bits = num_bits
         self.num_bits_weight = num_bits_weight
-        self.clip = clip
         self.noise = noise
         if num_bits > 0:
             self.quantize_input = QuantMeasure(self.num_bits, stochastic=stochastic, debug=debug)
@@ -389,20 +387,20 @@ class NoisyLinear(nn.Linear):
                 # bias = quantize(self.bias, num_bits=self.num_bits_weight)
 
         elif self.test_noise > 0 and not self.training:
-            weight = AddNoise().apply(self.weight, self.test_noise, self.clip, self.debug)
+            weight = AddNoise().apply(self.weight, self.test_noise, self.debug)
             if self.bias is not None:
-                bias = AddNoise().apply(self.bias, self.test_noise, self.clip, self.debug)
+                bias = AddNoise().apply(self.bias, self.test_noise, self.debug)
 
         elif self.noise > 0 and self.training:
             if self.debug:
                 print('Adding noise to weights in linear layer:', 100.*self.noise, '%')
                 print('\n\nBefore:\n{}'.format(self.weight[0, :20]))
 
-            weight = AddNoise().apply(self.weight, self.noise, self.clip, self.debug)
+            weight = AddNoise().apply(self.weight, self.noise, self.debug)
             if self.debug:
                 print('\n\nAfter:\n{}'.format(weight[0, :20]))
             if self.bias is not None:
-                bias = AddNoise().apply(self.bias, self.noise, self.clip, self.debug)
+                bias = AddNoise().apply(self.bias, self.noise, self.debug)
         output = F.linear(qinput, weight, bias)
 
         return output

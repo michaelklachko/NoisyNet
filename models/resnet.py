@@ -26,11 +26,11 @@ class BasicBlock(nn.Module):
 
         #self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv1 = NoisyConv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                 clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                 noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         if args.old_checkpoint:
             self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = NoisyConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                 clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                 noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         if not args.old_checkpoint:
             self.bn1 = nn.BatchNorm2d(planes)
         self.bn2 = nn.BatchNorm2d(planes)
@@ -40,7 +40,7 @@ class BasicBlock(nn.Module):
             self.ds_strides = ds_strides
             #self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
             self.conv3 = NoisyConv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                     clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                     noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
             self.bn3 = nn.BatchNorm2d(ds_out)
             self.layer3 = []
 
@@ -140,7 +140,7 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         #self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.conv1 = NoisyConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                 clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                 noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         self.bn1 = nn.BatchNorm2d(64)
         if args.act_max > 0:
             self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
@@ -170,7 +170,7 @@ class ResNet(nn.Module):
         self.avgpool = nn.AvgPool2d(7, stride=1)
         #self.fc = nn.Linear(512, num_classes)
         self.fc = NoisyLinear(512, num_classes, bias=True, num_bits=0, num_bits_weight=args.q_w,
-                                   clip=0, noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                   noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         for m in self.modules():
             #print(m)

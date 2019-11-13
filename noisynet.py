@@ -339,16 +339,16 @@ class Net(nn.Module):
         self.quantize4 = QuantMeasure(args.q_a4, stochastic=args.stochastic, pctl=args.pctl, debug=args.debug_quant)
 
         self.conv1 = NoisyConv2d(3, args.fm1 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w1,
-                                     clip=0, noise=args.n_w1, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                     noise=args.n_w1, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         self.conv2 = NoisyConv2d(args.fm1 * args.width, args.fm2 * args.width, kernel_size=args.fs, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w2,
-                                     clip=0, noise=args.n_w2, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                     noise=args.n_w2, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         self.linear1 = NoisyLinear(args.fm2 * args.width * args.fs * args.fs, args.fc * args.width, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w3,
-                                     clip=0, noise=args.n_w3, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                     noise=args.n_w3, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         self.linear2 = NoisyLinear(args.fc * args.width, 10, bias=args.use_bias, num_bits=0, num_bits_weight=args.q_w4,
-                                     clip=0, noise=args.n_w4, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                     noise=args.n_w4, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
 
         if args.batchnorm:
             self.bn1 = nn.BatchNorm2d(args.fm1 * args.width, track_running_stats=args.track_running_stats)
@@ -1054,7 +1054,7 @@ for current in current_vars:
                     total_power = np.nansum(p)
                     power_string = '  Power {:.2f}mW ({:.2f} {:.2f} {:.2f} {:.2f})'.format(total_power, *p)
 
-                te_acc = np.mean(te_accs)
+                te_acc = np.mean(te_accs, dtype=np.float64)
 
                 print('\n\nRestored Model Accuracy (epoch {:d}): {:.2f}{}{}{}\n\n'.format(init_epoch, te_acc, power_string, noise_string, input_sparsity_string))
                 if not args.distort_w_test:
@@ -1511,7 +1511,7 @@ for current in current_vars:
                     acc = pred.eq(label.data).cpu().sum().numpy() * 100.0 / args.batch_size
                     tr_accuracies.append(acc)
 
-                tr_acc = np.mean(tr_accuracies)
+                tr_acc = np.mean(tr_accuracies, dtype=np.float64)
 
                 model.eval()
                 if args.split:
@@ -1548,7 +1548,7 @@ for current in current_vars:
                         total_power = np.nansum(p)
                         power_string = '  Power {:.2f}mW ({:.2f} {:.2f} {:.2f} {:.2f})'.format(total_power, *p)
 
-                te_acc = np.mean(te_accuracies)
+                te_acc = np.mean(te_accuracies, dtype=np.float64)
 
                 if args.distort_w_test:
                     noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
@@ -1575,7 +1575,7 @@ for current in current_vars:
                     for n, p in model.named_parameters():  # calcualte weight sparsity as the smallest 2% of all weights by magnitude
                         if 'weight' in n and ('linear' in n or 'conv' in n):
                             w_sparsity.append(p[torch.abs(p) > 0.02*(p.max() - p.min())].numel() / p.numel())
-                    avg_w_sparsity = np.mean(w_sparsity)
+                    avg_w_sparsity = np.mean(w_sparsity, dtype=np.float64)
                     w_sparsity_string = '  w spars {:.2f} ({:.2f} {:.2f} {:.2f} {:.2f})'.format(avg_w_sparsity, *w_sparsity)
 
                     print('{}\tEpoch {:>3d}  Train {:.2f}  Test {:.2f}{}  LR {:.4f}{}{}{}{}{}{}{}'.format(
