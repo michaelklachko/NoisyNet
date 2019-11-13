@@ -18,13 +18,28 @@ class Net(nn.Module):
         super(Net, self).__init__()
         self.debug = args.debug
         self.q_a = args.q_a
-        self.fc1 = nn.Linear(784*3, 390, bias=args.use_bias)
+        self.triple_input = args.triple_input
+        self.batchnorm1 = args.bn1
+        self.batchnorm2 = args.bn2
+
+        if self.triple_input:
+            input_size = 3
+        else:
+            input_size = 1
+        self.fc1 = nn.Linear(784*input_size, 390, bias=args.use_bias)
         self.fc2 = nn.Linear(390, 10, bias=args.use_bias)
         self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, max_value=1, debug=args.debug)
-        self.quantize1 = QuantMeasure(4, stochastic=args.stochastic, max_value=1, debug=args.debug)
-        self.quantize2 = QuantMeasure(2, stochastic=args.stochastic, max_value=1, debug=args.debug)
-        self.quantize3 = QuantMeasure(1, stochastic=args.stochastic, max_value=1, debug=args.debug)
+        if args.triple_input:
+            self.quantize1 = QuantMeasure(4, stochastic=args.stochastic, max_value=1, debug=args.debug)
+            self.quantize2 = QuantMeasure(3, stochastic=args.stochastic, max_value=1, debug=args.debug)
+            self.quantize3 = QuantMeasure(2, stochastic=args.stochastic, max_value=1, debug=args.debug)
         #self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, max_value=args.act_max, debug=args.debug)
+
+        if args.bn1:
+            self.bn1 = nn.BatchNorm1d(390, track_running_stats=args.track_running_stats)
+        if args.bn2:
+            self.bn2 = nn.BatchNorm1d(10, track_running_stats=args.track_running_stats)
+
         self.drop_p_input = args.dropout_input
         self.drop_p_act = args.dropout_act
         self.dropout_act = nn.Dropout(p=args.dropout_act)
@@ -33,12 +48,14 @@ class Net(nn.Module):
     def forward(self, x):
         self.input = x
         if self.q_a > 0:
-            #x = self.quantize(x)
-            x1 = self.quantize1(x)
-            x2 = self.quantize2(x)
-            x3 = self.quantize3(x)
-            x = torch.cat([x1, x2, x3], dim=1)
-            #print(x.shape)
+            if self.triple_input:
+                x1 = self.quantize1(x)
+                x2 = self.quantize2(x)
+                x3 = self.quantize3(x)
+                x = torch.cat([x1, x2, x3], dim=1)
+            else:
+                x = self.quantize(x)
+
             self.quantized_input = x
 
         if self.drop_p_input > 0:
@@ -46,6 +63,9 @@ class Net(nn.Module):
 
         self.preact = self.fc1(x)
         x = F.relu(self.preact)
+
+        if self.batchnorm1:
+            x = self.bn1(x)
         self.act = x
         if self.debug:
             print('\nbefore\n{}\n'.format(x[0, :100]))
@@ -54,6 +74,9 @@ class Net(nn.Module):
             x = self.dropout_act(x)
 
         self.output = self.fc2(x)
+        if self.batchnorm2:
+            self.output = self.bn2(self.output)
+
         if self.training:
             return F.log_softmax(self.output, dim=1)
         else:
@@ -73,6 +96,7 @@ def train(args, model, num_train_batches, images, labels, optimizer):
 
         if args.L3 > 0:
             param_grads = torch.autograd.grad(loss, model.parameters(), create_graph=True)
+            #param_grads = torch.autograd.grad(loss, [model.fc1.weight, model.fc2.weight], create_graph=True)
             grad_norm = 0
             for grad in param_grads:
                 grad_norm += grad.pow(2).sum()
@@ -153,7 +177,11 @@ def main():
     parser.add_argument('--calculate_running', dest='calculate_running', action='store_true', help='calculate_running')
     parser.add_argument('--plot', dest='plot', action='store_true', help='plot')
     parser.add_argument('--save', dest='save', action='store_true', help='save')
+    parser.add_argument('--bn1', dest='bn1', action='store_true', help='bn1')
+    parser.add_argument('--bn2', dest='bn2', action='store_true', help='bn2')
+    parser.add_argument('--track_running_stats', dest='track_running_stats', action='store_true', help='track_running_stats')
     parser.add_argument('--augment', dest='augment', action='store_true', help='augment')
+    parser.add_argument('--triple_input', dest='triple_input', action='store_true', help='triple_input')
     parser.add_argument('--dropout_input', type=float, default=0.2, help='dropout_input drop prob')
     parser.add_argument('--dropout_act', type=float, default=0.4, help='dropout_act drop prob')
     parser.add_argument('--prune_weights1', type=float, default=0.0, help='percentage of smallest weights to set to zero')
@@ -216,10 +244,10 @@ def main():
                 train_inputs = train_inputs[rnd_idx]
                 train_labels = train_labels[rnd_idx]
 
-                if epoch == 80:
+                if epoch % 70 == 0 and epoch != 0:
                     print('\nReducing learning rate ')
                     for param_group in optimizer.param_groups:
-                        param_group['lr'] = args.LR / 10.
+                        param_group['lr'] = param_group['lr'] / 10.
                 train_acc = train(args, model, num_train_batches, train_inputs, train_labels, optimizer)
                 val_acc = test(model, test_inputs, test_labels)
 
@@ -230,7 +258,8 @@ def main():
                     print('\n\nAccuracy after pruning: {:.2f}\n\n'.format(val_acc))
                 else:
                     sparsities = [p.data[torch.abs(p.data) < 0.01 * p.data.max()].numel() / p.data.numel() * 100.0 for _, p in model.named_parameters()]
-                print('Epoch {:>2d} train acc {:>.2f} test acc {:>.2f} sparsity {:>3.1f} {:>3.1f}'.format(epoch, train_acc, val_acc, sparsities[0], sparsities[1]))
+                print('Epoch {:>2d} train acc {:>.2f} test acc {:>.2f}  LR {:.4f}  sparsity {:>3.1f} {:>3.1f}'.format(
+                        epoch, train_acc, val_acc, optimizer.param_groups[0]['lr'], sparsities[0], sparsities[1]))
                 if val_acc > best_acc:
                     best_acc = val_acc
 
