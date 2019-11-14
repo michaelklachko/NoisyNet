@@ -279,6 +279,7 @@ class ResNet(nn.Module):
             else:
                 names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
                 names = ['input', 'weights', 'vmm', 'source']
+                names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums diff', 'weight sums diff blocked', 'source']
 
             if args.merge_bn:
                 names.append('bias')

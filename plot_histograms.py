@@ -10,8 +10,13 @@ import torch.nn.functional as F
 
 
 def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv', basic=False, debug=False):
-    print('\nLayer type:', layer, 'Input:', list(input.shape), 'weights:', list(weight.shape), 'output:', list(output.shape))#,
+    #print('\nLayer type:', layer, 'Input:', list(input.shape), 'weights:', list(weight.shape), 'output:', list(output.shape))#,
           #'\ndot product vector length:', np.prod(list(weight.shape)[1:]), 'fanout:', list(weight.shape)[0])
+
+    print('input {} ({:.2f}, {:.2f}) weights {} ({:.2f}, {:.2f})  output {} ({:.2f}, {:.2f})'.format(
+            list(input.shape), input.min().item(), input.max().item(), list(weight.shape), weight.min().item(), weight.max().item(),
+            list(output.shape), output.min().item(), output.max().item()))
+
     with torch.no_grad():
         arrays.append([input.half().detach().cpu().numpy()])
         arrays.append([weight.half().detach().cpu().numpy()])
@@ -24,6 +29,87 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
 
         if basic:
             return
+
+        blocks = []
+        pos_blocks = []
+        neg_blocks = []
+        #weight_sums_blocked = []
+        weight_sums_sep_blocked = []
+        block_size = 64
+        dim = weight.shape[1]  # weights shape: (fm_out, fm_in, fs, fs)
+
+        num_blocks = max(dim // block_size, 1)  # min 1 block, must be cleanly divisible!
+
+        if layer == 'conv':
+            '''Weight blocking: fm_in is the dimension to split into blocks.  Merge filter size into fm_out, and extract dimx1x1 blocks. 
+			Split input (bs, fms, h, v) into blocks of fms dim, and convolve with weight blocks. This could probably be done with grouped convolutions, but meh'''
+            f = weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
+
+        for b in range(num_blocks):
+            if layer == 'conv':
+                input_block = input[:, b * block_size: (b + 1) * block_size, :, :]
+                weight_block = f[:, b * block_size: (b + 1) * block_size, :, :]
+            elif layer == 'linear':
+                input_block = input[:, b * block_size: (b + 1) * block_size]
+                weight_block = weight[:, b * block_size: (b + 1) * block_size]
+            weight_block_pos = weight_block.clone()
+            weight_block_neg = weight_block.clone()
+            weight_block_pos[weight_block_pos <= 0] = 0
+            weight_block_neg[weight_block_neg > 0] = 0
+            if b == 0 and debug:
+                print(
+                '\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape,
+                '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel())
+            if layer == 'conv':
+                if b == 0 and debug:
+                    print('\nWeight block sum(0) shape:', weight_block.sum((1, 2, 3)).shape, '\n\n')
+                blocks.append(F.conv2d(input_block, weight_block, stride=stride, padding=padding))
+                pos_blocks.append(F.conv2d(input_block, weight_block_pos, stride=stride, padding=padding))
+                neg_blocks.append(F.conv2d(input_block, weight_block_neg, stride=stride, padding=padding))
+                #weight_sums_blocked.append(torch.abs(weight_block).sum((1, 2, 3)))
+                weight_sums_sep_blocked.extend([weight_block_pos.sum((1, 2, 3)), weight_block_neg.sum((1, 2, 3))])
+            elif layer == 'linear':
+                if b == 0 and debug:
+                    print('\nWeight block sum(0) shape:', weight_block.sum(1).shape, '\n\n')
+                blocks.append(F.linear(weight_block, input_block))
+                pos_blocks.append(F.linear(input_block, weight_block_pos))
+                neg_blocks.append(F.linear(input_block, weight_block_neg))
+                #weight_sums_blocked.append(torch.abs(weight_block).sum(1))
+                weight_sums_sep_blocked.extend([weight_block_pos.sum(1), weight_block_neg.sum(1)])
+
+        blocked = torch.cat(blocks, 1)  # conv_out shape: (bs, fms, h, v)
+        pos_blocks = torch.cat(pos_blocks, 1)
+        neg_blocks = torch.cat(neg_blocks, 1)
+        # print('\n\nconv2_pos_blocks:\n', pos_blocks.shape, '\n', pos_blocks[2,2])
+        # print('\n\nconv2_neg_blocks:\n', neg_blocks.shape, '\n', neg_blocks[2, 2], '\n\n')
+        # raise(SystemExit)
+        sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
+        # print('\nblocks shape', blocks.shape, '\n')
+        # print(blocks.detach().cpu().numpy()[60, 234, :8, :8])
+        #weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
+        weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
+
+        w_pos = weight.clone()
+        w_pos[w_pos < 0] = 0
+        w_neg = weight.clone()
+        w_neg[w_neg >= 0] = 0
+        if layer == 'conv':
+            #weight_sums = torch.abs(weight).sum((1, 2, 3))  # assuming weights shape: (out_fms, in_fms, x, y)
+            # now multiply every pixel in every input feature map by the corersponding value in weight_sums vector:
+            # e.g. 64 input feature maps, 20x20 pixels each, and 64 corresponding values in weight_sums vector
+            # the result will be 64x20x20 scaled values (each input feature map has its own unique scaling factor)
+            # implementation: first reshape (expand) weight_sums to (1, 64, 1, 1) , then multiply (bs, 64, x, y) by this vector
+            #source_values = weight_sums.view(1, len(weight_sums), 1, 1) * input
+            pos = F.conv2d(input, w_pos, stride=stride, padding=padding)
+            neg = F.conv2d(input, w_neg, stride=stride, padding=padding)
+            weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
+        elif layer == 'linear':
+            #weight_sums = torch.abs(weight).sum(1)
+            pos = F.linear(input, w_pos)
+            neg = F.linear(input, w_neg)
+            weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
+
+        sep = torch.cat((neg, pos), 0)
 
         if layer == 'conv':
             """
@@ -61,98 +147,16 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
             source_sums = weight_sums * input
             #print('\n\ninput {} weight {} weight_sums {} source_sums {}\n\n'.format(
                 #list(input.shape), list(weight.shape), list(weight_sums.shape), list(source_sums.shape)))
-        arrays.append([source_sums.half().detach().cpu().numpy()])
-        return
-
-        blocks = []
-        pos_blocks = []
-        neg_blocks = []
-        weight_sums_blocked = []
-        weight_sums_sep_blocked = []
-        block_size = 64
-        dim = weight.shape[1]  # weights shape: (fm_out, fm_in, fs, fs)
-
-        num_blocks = max(dim // block_size, 1)  # min 1 block, must be cleanly divisible!
-
-        if layer == 'conv':
-            '''Weight blocking: fm_in is the dimension to split into blocks.  Merge filter size into fm_out, and extract dimx1x1 blocks. 
-			Split input (bs, fms, h, v) into blocks of fms dim, and convolve with weight blocks. This could probably be done with grouped convolutions, but meh'''
-            f = weight.permute(2, 3, 0, 1).contiguous().view(-1, dim, 1, 1)
-
-        for b in range(num_blocks):
-            if layer == 'conv':
-                input_block = input[:, b * block_size: (b + 1) * block_size, :, :]
-                weight_block = f[:, b * block_size: (b + 1) * block_size, :, :]
-            elif layer == 'linear':
-                input_block = input[:, b * block_size: (b + 1) * block_size]
-                weight_block = weight[:, b * block_size: (b + 1) * block_size]
-            weight_block_pos = weight_block.clone()
-            weight_block_neg = weight_block.clone()
-            weight_block_pos[weight_block_pos <= 0] = 0
-            weight_block_neg[weight_block_neg > 0] = 0
-            if b == 0 and debug:
-                print(
-                '\n\nNumber of blocks:', num_blocks, 'weight block shape:', weight_block.shape, '\nweights for single output neuron:', weight_block[0].shape,
-                '\nActual weights (one block):\n', weight_block[0].detach().cpu().numpy().ravel())
-            if layer == 'conv':
-                if b == 0 and debug:
-                    print('\nWeight block sum(0) shape:', weight_block.sum((1, 2, 3)).shape, '\n\n')
-                blocks.append(F.conv2d(input_block, weight_block, stride=stride, padding=padding))
-                pos_blocks.append(F.conv2d(input_block, weight_block_pos, stride=stride, padding=padding))
-                neg_blocks.append(F.conv2d(input_block, weight_block_neg, stride=stride, padding=padding))
-                weight_sums_blocked.append(torch.abs(weight_block).sum((1, 2, 3)))
-                weight_sums_sep_blocked.extend([weight_block_pos.sum((1, 2, 3)), weight_block_neg.sum((1, 2, 3))])
-            elif layer == 'linear':
-                if b == 0 and debug:
-                    print('\nWeight block sum(0) shape:', weight_block.sum(1).shape, '\n\n')
-                blocks.append(F.linear(weight_block, input_block))
-                pos_blocks.append(F.linear(input_block, weight_block_pos))
-                neg_blocks.append(F.linear(input_block, weight_block_neg))
-                weight_sums_blocked.append(torch.abs(weight_block).sum(1))
-                weight_sums_sep_blocked.extend([weight_block_pos.sum(1), weight_block_neg.sum(1)])
-
-        blocked = torch.cat(blocks, 1)  # conv_out shape: (bs, fms, h, v)
-        pos_blocks = torch.cat(pos_blocks, 1)
-        neg_blocks = torch.cat(neg_blocks, 1)
-        # print('\n\nconv2_pos_blocks:\n', pos_blocks.shape, '\n', pos_blocks[2,2])
-        # print('\n\nconv2_neg_blocks:\n', neg_blocks.shape, '\n', neg_blocks[2, 2], '\n\n')
-        # raise(SystemExit)
-        sep_blocked = torch.cat((pos_blocks, neg_blocks), 0)
-        # print('\nblocks shape', blocks.shape, '\n')
-        # print(blocks.detach().cpu().numpy()[60, 234, :8, :8])
-        weight_sums_blocked = torch.cat(weight_sums_blocked, 0)
-        weight_sums_sep_blocked = torch.cat(weight_sums_sep_blocked, 0)
-
-        w_pos = weight.clone()
-        w_pos[w_pos < 0] = 0
-        w_neg = weight.clone()
-        w_neg[w_neg >= 0] = 0
-        if layer == 'conv':
-            weight_sums = torch.abs(weight).sum((1, 2, 3))  # assuming weights shape: (out_fms, in_fms, x, y)
-            # now multiply every pixel in every input feature map by the corersponding value in weight_sums vector:
-            # e.g. 64 input feature maps, 20x20 pixels each, and 64 corresponding values in weight_sums vector
-            # the result will be 64x20x20 scaled values (each input feature map has its own unique scaling factor)
-            # implementation: first reshape (expand) weight_sums to (1, 64, 1, 1) , then multiply (bs, 64, x, y) by this vector
-            source_values = weight_sums.view(1, len(weight_sums), 1, 1) * input
-            pos = F.conv2d(input, w_pos, stride=stride, padding=padding)
-            neg = F.conv2d(input, w_neg, stride=stride, padding=padding)
-            weight_sums_sep = torch.cat((w_pos.sum((1, 2, 3)), w_neg.sum((1, 2, 3))), 0)
-        elif layer == 'linear':
-            weight_sums = torch.abs(weight).sum(1)
-            pos = F.linear(input, w_pos)
-            neg = F.linear(input, w_neg)
-            weight_sums_sep = torch.cat((w_pos.sum(1), w_neg.sum(1)), 0)
-
-        sep = torch.cat((neg, pos), 0)
 
         arrays.append([sep.half().detach().cpu().numpy()])
         arrays.append([blocked.half().detach().cpu().numpy()])
         arrays.append([sep_blocked.half().detach().cpu().numpy()])
 
-        arrays.append([weight_sums.half().detach().cpu().numpy()])
+        #arrays.append([weight_sums.half().detach().cpu().numpy()])
         arrays.append([weight_sums_sep.half().detach().cpu().numpy()])
-        arrays.append([weight_sums_blocked.half().detach().cpu().numpy()])
+        #arrays.append([weight_sums_blocked.half().detach().cpu().numpy()])
         arrays.append([weight_sums_sep_blocked.half().detach().cpu().numpy()])
+        arrays.append([source_sums.half().detach().cpu().numpy()])
 
 
 def plot(values1, values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=False, path=None):
@@ -215,10 +219,10 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
         if show and 'input' in name:
             label = info[0] + label
             show = False
-        if 'input' in name or 'weight' in name:
-            label = None
-        else:
-            label = '({:.1f}, {:.1f})'.format(np.min(array), np.max(array))
+        #if 'input' in name or 'weight' in name:
+            #label = None
+        #else:
+        label = '({:.1f}, {:.1f})'.format(np.min(array), np.max(array))
 
         ax.hist(array.ravel(), alpha=alpha, bins=bins, density=False, color=color, range=range_, histtype=histtype, label=label, linewidth=1.5)
 
@@ -230,7 +234,7 @@ def place_fig(arrays, rows=1, columns=1, r=0, c=0, bins=100, range_=None, title=
     plt.yticks(fontsize=16)
     if log:
         plt.semilogy()
-    ax.legend(loc='upper right', prop={'size': 16})
+    ax.legend(loc='best', prop={'size': 16})
 
 
 def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, labels=['1'], normalize=False):
@@ -256,6 +260,8 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
                         raise(SystemExit)
                     array[0] = array[0] / max_input
                 elif name == 'weights':
+                    thr = np.max(np.abs(array[0]))
+                    '''
                     thr_neg = np.percentile(array[0], 100 - pctl)
                     thr_pos = np.percentile(array[0], pctl)
                     thr = max(abs(thr_neg), thr_pos)
@@ -263,17 +269,22 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
                     # TODO is the below assignment safe???
                     array[0][array[0] > thr] = thr
                     array[0][array[0] < -thr] = -thr
+                    '''
                     # print(name, 'np.max(array)', np.max(array[0]))
                     # print('before\n', array[0].ravel()[20:40])
-                    if thr == 0:
-                        print('\n\nLayer {}, array {} (column {}) error when normalizing the array\nmax_weight = {} = zero\n'
-                              'weights are clipped at ({}, {}), pctl: {}\nexiting...\n\n'.format(thr_neg, thr_pos, pctl, r, name, c, thr))
+                    if False and thr == 0:
+                        #print('\n\nLayer {}, array {} (column {}) error when normalizing the array\nmax_weight = {} = zero\n'
+                              #'weights are clipped at ({}, {}), pctl: {}\nexiting...\n\n'.format(thr_neg, thr_pos, pctl, r, name, c, thr))
                         raise(SystemExit)
                     array[0] = array[0] / thr
+                elif name == 'weight sums diff' or name == 'weight sums diff blocked':
+                    array[0] = array[0] / thr
                 else:
-                    array[0] = array[0] / (max_input * thr)  # TODO fragile - inputs and weights must be the first two arrays in each layer
+                    array[0] = array[0] / (max_input * thr)  # TODO fragile - inputs and weights must be the first two arrays in each layer for this to work
                 # print('after\n', array[0].ravel()[20:40])
+
             place_fig(array, rows=rows, columns=columns, r=r, c=c, title='layer' + str(r) + ' ', name=name, infos=layer_info, labels=labels)
+
     print('\n\nSaving plot to {}\n'.format(path + filename))
     plt.savefig(path + filename, dpi=120, bbox_inches='tight')
     print('\nDone!\n')
