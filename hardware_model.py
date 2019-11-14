@@ -204,7 +204,7 @@ class QuantMeasure(nn.Module):
     """
 
     def __init__(self, num_bits=8, momentum=0.0, stochastic=0.5, min_value=0., max_value=0., scale=1,
-                 calculate_running=False, pctl=0., debug=False, debug_quant=False, inplace=False):
+                 calculate_running=False, pctl=90., debug=False, inplace=False):
         super(QuantMeasure, self).__init__()
         self.register_buffer('running_min', torch.zeros(1))
         self.register_buffer('running_max', torch.zeros([]))
@@ -213,13 +213,15 @@ class QuantMeasure(nn.Module):
         self.stochastic = stochastic
         self.inplace = inplace
         self.debug = debug
-        self.debug_quant = debug_quant
         self.max_value = max_value
         self.min_value = min_value
         self.scale = scale
         self.calculate_running = calculate_running
         self.running_list = []
         self.pctl = pctl
+        if pctl < 1:
+            print('\n\npctl is {} please check!!!\n\n\n'.format(pctl))
+            raise(SystemExit)
 
     def forward(self, input):
         # max_value_their = input.detach().contiguous().view(input.size(0), -1).max(-1)[0].mean()
@@ -241,6 +243,8 @@ class QuantMeasure(nn.Module):
                         else:
                             pctl = torch.tensor(1.0)
                     else:
+                        #print('\nlen(input)', input.numel(), 'pctl', self.pctl, 'self.pctl / 100.', self.pctl / 100., 'int(input.numel() * self.pctl / 100.)',
+                              #int(input.numel() * self.pctl / 100.), 'max', input.max().item(), 'min', input.min().item())
                         pctl, _ = torch.kthvalue(input.flatten(), int(input.numel() * self.pctl / 100.))
                     # print('input.shape', input.shape, 'pctl.shape', pctl.shape)
                     # self.running_max = pctl
@@ -274,7 +278,7 @@ class QuantMeasure(nn.Module):
             else:
                 stoch = 0
 
-        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, self.debug_quant)
+        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, False)
 
 
 class AddNoise(InplaceFunction):
@@ -345,7 +349,8 @@ class NoisyConv2d(nn.Conv2d):
                 bias = AddNoise().apply(self.bias, self.noise, self.debug)
 
         output = F.conv2d(qinput, weight, bias, self.stride, self.padding, self.dilation, self.groups)
-
+        if self.debug:
+            raise(SystemExit)
         return output
 
 

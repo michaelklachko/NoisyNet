@@ -23,7 +23,7 @@ from models.resnet import ResNet18
 from models.mobilenet import mobilenet_v2
 
 import utils
-from quant import QuantMeasure
+from hardware_model import QuantMeasure
 #from mn import mobilenet_v2
 
 def parse_args():
@@ -115,6 +115,11 @@ def parse_args():
     feature_parser.add_argument('--fp16', dest='fp16', action='store_true')
     feature_parser.add_argument('--no-fp16', dest='fp16', action='store_false')
     parser.set_defaults(fp16=False)
+
+    feature_parser = parser.add_mutually_exclusive_group(required=False)
+    feature_parser.add_argument('--track_running_stats', dest='track_running_stats', action='store_true')
+    feature_parser.add_argument('--no-track_running_stats', dest='track_running_stats', action='store_false')
+    parser.set_defaults(track_running_stats=True)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--plot', dest='plot', action='store_true')
@@ -529,7 +534,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
             acc = utils.accuracy(output, target)
             te_accs.append(acc)
 
-            if False and args.q_a > 0 and args.calculate_running and i == 4:
+            if args.q_a > 0 and args.calculate_running and i == 4:
                 if args.debug:
                     print('\n')
                 with torch.no_grad():

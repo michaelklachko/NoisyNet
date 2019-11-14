@@ -28,12 +28,12 @@ class BasicBlock(nn.Module):
         self.conv1 = NoisyConv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                  noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         if args.old_checkpoint:
-            self.bn1 = nn.BatchNorm2d(planes)
+            self.bn1 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
         self.conv2 = NoisyConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                  noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
         if not args.old_checkpoint:
-            self.bn1 = nn.BatchNorm2d(planes)
-        self.bn2 = nn.BatchNorm2d(planes)
+            self.bn1 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
+        self.bn2 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
 
         if downsample is not None:
             ds_in, ds_out, ds_strides = downsample
@@ -41,12 +41,12 @@ class BasicBlock(nn.Module):
             #self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
             self.conv3 = NoisyConv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                      noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-            self.bn3 = nn.BatchNorm2d(ds_out)
+            self.bn3 = nn.BatchNorm2d(ds_out, track_running_stats=args.track_running_stats)
             self.layer3 = []
 
         if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
+            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
 
     def forward(self, x):
         '''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
@@ -141,7 +141,7 @@ class ResNet(nn.Module):
         #self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.conv1 = NoisyConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                  noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = nn.BatchNorm2d(64, track_running_stats=args.track_running_stats)
         if args.act_max > 0:
             self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
         else:
@@ -158,9 +158,9 @@ class ResNet(nn.Module):
             self.q_a_first = 0
 
         if self.q_a_first > 0:
-            self.quantize1 = QuantMeasure(self.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug, inplace=args.q_inplace)
+            self.quantize1 = QuantMeasure(self.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
         if args.q_a > 0:
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl/100, debug=args.debug, inplace=args.q_inplace)
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
 
         self.layer1 = self._make_layer(block, 64)
         self.layer2 = self._make_layer(block, 128, stride=2)
