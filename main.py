@@ -146,6 +146,16 @@ def parse_args():
     feature_parser.add_argument('--no-q_inplace', dest='q_inplace', action='store_false')
     parser.set_defaults(q_inplace=False)
 
+    feature_parser = parser.add_mutually_exclusive_group(required=False)
+    feature_parser.add_argument('--ignore_best_acc', dest='ignore_best_acc', action='store_true')
+    feature_parser.add_argument('--no-ignore_best_acc', dest='ignore_best_acc', action='store_false')
+    parser.set_defaults(ignore_best_acc=True)
+
+    feature_parser = parser.add_mutually_exclusive_group(required=False)
+    feature_parser.add_argument('--reset_start_epoch', dest='reset_start_epoch', action='store_true')
+    feature_parser.add_argument('--no-reset_start_epoch', dest='reset_start_epoch', action='store_false')
+    parser.set_defaults(reset_start_epoch=False)
+
     warnings.filterwarnings("ignore", "Corrupt EXIF data", UserWarning)
 
     args = parser.parse_args()
@@ -160,11 +170,10 @@ def load_from_checkpoint(args):
         checkpoint = torch.load(args.resume)
         start_epoch = checkpoint['epoch']
         best_acc = checkpoint['best_acc']
-        best_epoch = checkpoint['epoch']
         #model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         if args.var_name is None:
-            print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, best_epoch))
+            print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, start_epoch))
         if args.debug:
             utils.print_model(model, args, full=True)
 
@@ -214,7 +223,7 @@ def load_from_checkpoint(args):
         print("=> no checkpoint found at '{}'".format(args.resume))
         raise(SystemExit)
 
-    return model, criterion, optimizer, best_acc, best_epoch, start_epoch
+    return model, criterion, optimizer, best_acc, start_epoch
 
 
 def get_gradients(model, args, val_loader):
@@ -534,7 +543,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
             acc = utils.accuracy(output, target)
             te_accs.append(acc)
 
-            if args.q_a > 0 and args.calculate_running and i == 4:
+            if args.q_a > 0 and args.calculate_running and epoch == 0 and i == 4:
                 if args.debug:
                     print('\n')
                 with torch.no_grad():
@@ -542,8 +551,7 @@ def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
                         if isinstance(m, QuantMeasure):
                             m.calculate_running = False
                             m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
-                            if args.debug:
-                                print('(val) running_list:', m.running_list, 'running_max:', m.running_max)
+                            print('(val) running_list:', ['{:.2f}'.format(v.item()) for v in m.running_list], 'running_max: {:.3f}'.format(m.running_max.item()))
 
         mean_acc = np.mean(te_accs, dtype=np.float64)
         print('\n{}\tEpoch {:d}  Validation Accuracy: {:.2f}\n'.format(str(datetime.now())[:-7], epoch, mean_acc))
@@ -718,7 +726,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                         if isinstance(m, QuantMeasure):
                             m.calculate_running = False
                             m.running_max = torch.tensor(m.running_list, device='cuda:0').mean()
-                            print('(train) running_list:', m.running_list, 'running_max:', m.running_max)
+                            print('(train) running_list:', ['{:.2f}'.format(v.item()) for v in m.running_list], 'running_max: {:.3f}'.format(m.running_max.item()))
 
             if args.w_max > 0:
                 for n, p in model.named_parameters():
@@ -783,7 +791,7 @@ def main():
             for s in range(args.num_sims):
                 #print('\nSimulation', s)
                 if args.resume:
-                    model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
+                    model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
 
                     if args.fp16 and not args.amp:
                         model = model.half()
@@ -819,7 +827,7 @@ def main():
                         if isinstance(m, QuantMeasure):
                             m.calculate_running = True
                             m.running_list = []
-                acc = validate(val_loader, model, args, epoch=best_epoch, plot_acc=best_acc)
+                acc = validate(val_loader, model, args, epoch=start_epoch, plot_acc=best_acc)
                 acc_list.append(acc)
 
             if args.distort_w_test and args.var_name is not None:  # ugly...
@@ -833,7 +841,7 @@ def main():
         return  #might fail with DataParallel
 
     if args.resume:
-        model, criterion, optimizer, best_acc, best_epoch, start_epoch = load_from_checkpoint(args)
+        model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
 
         for param_group in optimizer.param_groups:
             if args.weight_decay != param_group['weight_decay']:
@@ -876,16 +884,32 @@ def main():
             raise(SystemExit)
             """
             test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+        else:
+            print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
+            if (args.q_a > 0 and start_epoch != 0 and args.calculate_running) or args.reset_start_epoch:
+                print('\n\ncalculate_running is True - setting start_epoch to zero to run validation\n\n')
+                validate(val_loader, model, args, epoch=0, plot_acc=best_acc)
+            else:
+                validate(val_loader, model, args, epoch=start_epoch, plot_acc=best_acc)
 
-        print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
-        validate(val_loader, model, args, epoch=best_epoch, plot_acc=best_acc)
+        if args.ignore_best_acc:  # if doing training after restoring, save model even if new best accuracy is worse (default=True)
+            best_acc = 0
+
         if args.evaluate:
             #raise (SystemExit)
             return  #might fail with DataParallel
     else:
         model, criterion, optimizer = build_model(args)
-        best_acc, best_epoch, start_epoch = 0, 0, 0
-    best_acc, best_epoch = 0, 0
+        best_acc, start_epoch = 0, 0
+
+    if args.reset_start_epoch:   # do not scale LR based on start_epoch (default=False)
+        start_epoch = 0
+
+    if args.q_a > 0 and args.calculate_running:
+        for m in model.modules():
+            if isinstance(m, QuantMeasure):
+                m.calculate_running = True
+                m.running_list = []
 
     train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args)
 
