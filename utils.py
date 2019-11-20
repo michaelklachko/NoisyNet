@@ -126,7 +126,7 @@ def load_cifar(args):
     test_inputs = torch.from_numpy(test_inputs).cuda()
     test_labels = torch.from_numpy(test_labels).cuda()
 
-    if args.normalize:  #whiten
+    if args.whiten_cifar10:  #whiten
         mean = np.asarray((0.4914, 0.4822, 0.4465)).reshape(1, 3, 1, 1).astype(dtype)
         std = np.asarray((0.2023, 0.1994, 0.2010)).reshape(1, 3, 1, 1).astype(dtype)
 

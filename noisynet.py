@@ -55,6 +55,11 @@ feature_parser.add_argument('--no-normalize', dest='normalize', action='store_fa
 parser.set_defaults(normalize=False)
 
 feature_parser = parser.add_mutually_exclusive_group(required=False)
+feature_parser.add_argument('--whiten_cifar10', dest='whiten_cifar10', action='store_true')
+feature_parser.add_argument('--no-whiten_cifar10', dest='whiten_cifar10', action='store_false')
+parser.set_defaults(whiten_cifar10=False)
+
+feature_parser = parser.add_mutually_exclusive_group(required=False)
 feature_parser.add_argument('--train_act_max', dest='train_act_max', action='store_true')
 feature_parser.add_argument('--no-train_act_max', dest='train_act_max', action='store_false')
 parser.set_defaults(train_act_max=False)
@@ -225,6 +230,7 @@ parser.add_argument('--fm3', type=int, default=256, metavar='', help='number of 
 parser.add_argument('--fm4', type=int, default=512, metavar='', help='number of feature maps in the first layer')
 parser.add_argument('--fc', type=int, default=390, metavar='', help='size of fully connected layer')
 parser.add_argument('--width', type=int, default=1, metavar='', help='expansion multiplier for layer width')
+parser.add_argument('--block_size', type=int, default=None, metavar='', help='block size for plotting')
 
 # ======================== Hyperparameter Setings ==================================
 parser.add_argument('--LR_act_max', type=float, default=0.001, metavar='', help='learning rate for learning act_max clipping threshold')
@@ -390,7 +396,7 @@ class Net(nn.Module):
         self.conv1_no_bias = self.conv1(self.input)
 
         if args.plot or args.write:
-            get_layers(arrays, self.input, self.conv1.weight, self.conv1_no_bias, stride=1, padding=0, layer='conv', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, self.input, self.conv1.weight, self.conv1_no_bias, stride=1, padding=0, layer='conv', basic=args.plot_basic, debug=args.debug, block_size=args.block_size)
 
         if args.merge_bn:
             self.bias1 = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + 0.0000001)
@@ -454,7 +460,7 @@ class Net(nn.Module):
         self.conv2_no_bias = self.conv2(self.relu1)
 
         if args.plot or args.write:
-            get_layers(arrays, self.relu1, self.conv2.weight, self.conv2_no_bias, stride=1, padding=0, layer='conv', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, self.relu1, self.conv2.weight, self.conv2_no_bias, stride=1, padding=0, layer='conv', basic=args.plot_basic, debug=args.debug, block_size=args.block_size)
 
         if args.merge_bn:
             self.bias2 = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + 0.0000001)
@@ -512,7 +518,7 @@ class Net(nn.Module):
         self.linear1_no_bias = self.linear1(self.relu2)
 
         if args.plot or args.write:
-            get_layers(arrays, self.relu2, self.linear1.weight, self.linear1_no_bias, layer='linear', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, self.relu2, self.linear1.weight, self.linear1_no_bias, layer='linear', basic=args.plot_basic, debug=args.debug, block_size=args.block_size)
 
         if args.merge_bn:
             self.bias3 = self.bn3.bias.view(1, -1) - self.bn3.running_mean.data.view(1, -1) * self.bn3.weight.data.view(1, -1) / torch.sqrt(self.bn3.running_var.data.view(1, -1) + 0.0000001)
@@ -561,7 +567,7 @@ class Net(nn.Module):
         self.linear2_no_bias = self.linear2(self.relu3)
 
         if args.plot or args.write:
-            get_layers(arrays, self.relu3, self.linear2.weight, self.linear2_no_bias, layer='linear', basic=args.plot_basic, debug=args.debug)
+            get_layers(arrays, self.relu3, self.linear2.weight, self.linear2_no_bias, layer='linear', basic=args.plot_basic, debug=args.debug, block_size=args.block_size)
 
         if args.bn4 and args.merge_bn:
             if self.training:
@@ -597,7 +603,21 @@ class Net(nn.Module):
             if (epoch == 0 and i == 0) or args.plot:
                 print('\n\n\nBatch size', list(self.input.size())[0], '\n\n\n')
 
-            names = ['input', 'weights', 'vmm']
+            if args.plot_basic:
+                names = ['input', 'weights', 'vmm']
+            else:
+                #names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums diff', 'weight sums diff blocked', 'source']
+                if args.block_size is None:
+                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source_full', 'source 128', 'source 64', 'source_32',
+                             'source full diff', 'source 128 diff', 'source 64 diff', 'source 32 diff']
+                else:
+                    if args.block_size == 0:
+                        block_size = 'full'
+                    else:
+                        block_size = str(args.block_size)
+                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source ' + block_size, 'source diff ' + block_size]
+
+                args.tag += '_full'
 
             if args.merge_bn:
                 names.append('bias')
@@ -611,11 +631,12 @@ class Net(nn.Module):
                 names.append('power')
                 args.tag += '_power'
 
-            names.append('pre-activation')
+            if args.normalize:
+                args.tag += '_norm'
 
-            if not args.plot_basic:
-                names.extend(['vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked'])
-                args.tag += '_blocked_diff'
+            args.tag += '_bs_' + str(args.batch_size)
+
+            names.append('pre-activation')
 
             print('\n\nPreparing arrays for plotting or writing:\n')
             layers = []
@@ -821,7 +842,7 @@ for current in current_vars:
         var_list = [0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
     elif args.var_name == 'selected_weights':
         var_list = [0, 1, 2, 3, 5, 10, 20, 30]
-        var_list = [0, 1, 2, 5, 10]
+        var_list = [2, 5, 10]
         acc_lists = []
     elif args.var_name == 'L2_w_max':
         var_list = [0.1]    #0.1 works fine for current=10 and init_w_max=0.2, no L2, and no act_max: w_min=-0.16, w_max=0.18, Acc 78.72 (epoch 225), power 3.45, noise 0.04 (0.02, 0.03, 0.04, 0.08)
@@ -995,7 +1016,7 @@ for current in current_vars:
                     merge_batchnorm(model, args)
 
                 if args.distort_w_test and args.var_name != '':
-                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                     """
                     if args.selection_criteria is None:
@@ -1082,7 +1103,7 @@ for current in current_vars:
                     print('\n\nFraction of clipped first layer weights: {:.2f}%\n\n'.format(fraction))
 
                 if args.distort_w_test:
-                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                     """
                     if args.selection_criteria is None:
@@ -1551,7 +1572,7 @@ for current in current_vars:
                 te_acc = np.mean(te_accuracies, dtype=np.float64)
 
                 if args.distort_w_test:
-                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                     avg_te_acc_dist = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)

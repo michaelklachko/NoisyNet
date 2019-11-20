@@ -60,6 +60,7 @@ def parse_args():
     parser.add_argument('--n_w_test', type=float, default=0, metavar='', help='weight noise to add during test')
     parser.add_argument('--local_rank', default=0, type=int, help='')
     parser.add_argument('--world_size', default=1, type=int, help='')
+    parser.add_argument('--block_size', type=int, default=None, metavar='', help='block size for plotting')
     parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
     parser.add_argument('--w_max', default=0, type=float, help='clipping threshold for weights')
     parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to avoid dividing by zero')
@@ -800,7 +801,7 @@ def main():
                         merge_batchnorm(model, args)
 
                     if args.distort_w_test and args.var_name is not None:
-                        noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+                        noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                         #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                         """
                         if args.selection_criteria is None:
@@ -868,7 +869,7 @@ def main():
                     p.data.clamp_(-0.25, 0.25)
 
         if args.distort_w_test or args.distort_act_test:
-            noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14]
+            noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
             #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
             if args.distort_w_test:
                 mode = 'weights'
@@ -887,7 +888,7 @@ def main():
         else:
             print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
             if (args.q_a > 0 and start_epoch != 0 and args.calculate_running) or args.reset_start_epoch:
-                print('\n\ncalculate_running is True - setting start_epoch to zero to run validation\n\n')
+                print('\n\nSetting start_epoch to zero to run validation\n\n')
                 validate(val_loader, model, args, epoch=0, plot_acc=best_acc)
             else:
                 validate(val_loader, model, args, epoch=start_epoch, plot_acc=best_acc)

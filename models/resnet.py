@@ -277,12 +277,27 @@ class ResNet(nn.Module):
             if args.plot_basic:
                 names = ['input', 'weights', 'vmm']
             else:
-                names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
-                names = ['input', 'weights', 'vmm', 'source']
-                names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums diff', 'weight sums diff blocked', 'source']
+                #names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
+                if args.block_size is None:
+                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source_full', 'source 128', 'source 64', 'source_32',
+                             'source full diff', 'source 128 diff', 'source 64 diff', 'source 32 diff']
+                else:
+                    if args.block_size == 0:
+                        block_size = 'full'
+                    else:
+                        block_size = str(args.block_size)
+                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source ' + block_size, 'source diff ' + block_size]
+
+                args.tag += '_full'
 
             if args.merge_bn:
                 names.append('bias')
+                args.tag += '_merged_bn'
+
+            if args.normalize:
+                args.tag += '_norm'
+
+            args.tag += '_bs_' + str(args.batch_size)
 
             names.append('pre-activations')
 
