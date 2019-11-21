@@ -9,6 +9,7 @@ import torch.utils.data
 from quant import QuantMeasure
 from plot_histograms import get_layers, plot_layers
 from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QuantMeasure
+from torch.distributions.normal import Normal
 import scipy.io
 
 
@@ -17,6 +18,18 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.downsample = downsample
         self.stride = stride
+        self.offset = args.offset
+
+        if self.offset > 0:
+            self.generate_offsets = True
+            with torch.no_grad():
+                self.register_buffer('act1_offsets', torch.zeros(1))
+                self.register_buffer('act2_offsets', torch.zeros(1))
+                self.register_buffer('act3_offsets', torch.zeros(1))
+                #distr = Normal(loc=0, scale=args.offset * 4 * torch.ones(act_shape))
+                #offsets1 = torch.cuda.FloatTensor(output.size()).uniform_(-noise, noise)
+                #offsets1 = output * output.new_empty(output.shape).uniform_(-noise, noise)
+
         #self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
 
         if args.act_max > 0:
@@ -56,8 +69,26 @@ class BasicBlock(nn.Module):
 
         if args.distort_act:
             with torch.no_grad():
-                x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
-                x = x + x_noise
+                if self.offset:
+                    if args.debug:
+                        print('\n\nEntering block, first conv:', list(x.shape))
+                    if self.generate_offsets:
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset * x.max() * torch.ones_like(x))
+                        self.act1_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.act1_offsets[0, 0, 0]))
+                        #self.generate_offsets = False
+                    if args.debug:
+                        print('\nact1 before:\n{}\n'.format(x[0, 0, 0]))
+                        print(x.shape, self.act1_offsets.shape)
+                    x = x + self.act1_offsets
+                    if args.debug:
+                        print('\nact1 after:\n{}\n'.format(x[0, 0, 0]))
+                else:
+                    x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                    x = x + x_noise
 
         residual = x
         out = self.conv1(x)
@@ -88,8 +119,26 @@ class BasicBlock(nn.Module):
 
         if args.distort_act:
             with torch.no_grad():
-                out_noise = out * torch.cuda.FloatTensor(out.size()).uniform_(-args.noise, args.noise)
-                out = out + out_noise
+                if self.offset:
+                    if args.debug:
+                        print('\n\nsecond conv:', list(out.shape))
+                    if self.generate_offsets:
+                        #print('generated offsets')
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset * out.max() * torch.ones_like(out))
+                        self.act2_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.act2_offsets[0,0,0]))
+                        self.generate_offsets = False
+                    if args.debug:
+                        print('\nact2 before:\n{}\n'.format(out[0,0,0]))
+                    out = out + self.act2_offsets
+                    if args.debug:
+                        print('\nact1 after:\n{}\n'.format(out[0, 0, 0]))
+                else:
+                    out_noise = out * torch.cuda.FloatTensor(out.size()).uniform_(-args.noise, args.noise)
+                    out = out + out_noise
 
         conv2_input = out
         out = self.conv2(out)
@@ -128,6 +177,7 @@ class BasicBlock(nn.Module):
             print('x + shortcut:', list(out.shape))
 
         out = self.relu(out)
+
         return out
 
 
@@ -138,6 +188,21 @@ class ResNet(nn.Module):
         global arrays  # for plotting
         arrays = []
         super(ResNet, self).__init__()
+
+        self.offset = args.offset
+        self.offset_input = args.offset_input
+
+        if self.offset > 0:
+            self.generate_offsets = True
+            with torch.no_grad():
+                self.register_buffer('act_offsets', torch.zeros(1))
+
+        if self.offset_input > 0:
+            self.generate_offsets = True
+            with torch.no_grad():
+                self.register_buffer('input_offsets', torch.zeros(1))
+
+
         #self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.conv1 = NoisyConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False, num_bits=0, num_bits_weight=args.q_w,
                                  noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
@@ -199,10 +264,28 @@ class ResNet(nn.Module):
         if self.q_a_first > 0:
             x = self.quantize1(x)
 
-        if False and args.distort_act:
+        if args.distort_act:
             with torch.no_grad():
-                x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
-                x = x + x_noise
+                if self.offset_input:
+                    if args.debug:
+                        print('\n\nRGB input:', list(x.shape))
+                    if self.generate_offsets:
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset_input * x.max() * torch.ones_like(x))
+                        self.input_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.input_offsets[0, 0, 0]))
+                        if self.offset == 0:  # turn it off here if only generating for inputs
+                            self.generate_offsets = False
+                    if args.debug:
+                        print('\nact1 before:\n{}\n'.format(x[0, 0, 0]))
+                    x = x + self.input_offsets
+                    if args.debug:
+                        print('\nact1 after:\n{}\n'.format(x[0, 0, 0]))
+                else:
+                    x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                    x = x + x_noise
 
         conv1_input = x
 
@@ -252,10 +335,26 @@ class ResNet(nn.Module):
 
         if args.distort_act:
             with torch.no_grad():
-                #print('\n\nBefore\n{}\n'.format(x[0,:10]))
-                x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
-                x = x + x_noise
-                #print('After\n{}\n'.format(x[0, :10]))
+                if self.offset:
+                    if args.debug:
+                        print('\n\nFC layer input:', list(x.shape))
+                    if self.generate_offsets:
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset * x.max() * torch.ones_like(x))
+                        self.act_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.act_offsets[0, :20]))
+                        self.generate_offsets = False
+                    if args.debug:
+                        print('\nact before:\n{}\n'.format(x[0, :20]))
+                    x = x + self.act_offsets
+                    if args.debug:
+                        print('\nact after:\n{}\n'.format(x[0, :20]))
+                        raise(SystemExit)
+                else:
+                    x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                    x = x + x_noise
 
         fc_input = x
 

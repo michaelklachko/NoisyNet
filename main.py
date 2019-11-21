@@ -67,6 +67,8 @@ def parse_args():
     parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
     parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
+    parser.add_argument('--offset', default=0, type=float, help='offset values to add to activations (opamp distortion)')
+    parser.add_argument('--offset_input', default=0, type=float, help='offset values to add to model input (opamp distortion)')
     parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
     parser.add_argument('--amp_level', default='O1', type=str, help='GPU to use, if None use all')
     parser.add_argument('--loss_scale', default=128.0, type=float, help='when using FP16 precision, scale loss by this value')
@@ -803,6 +805,7 @@ def main():
                     if args.distort_w_test and args.var_name is not None:
                         noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                         #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                        noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
                         """
                         if args.selection_criteria is None:
                             for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
@@ -871,6 +874,7 @@ def main():
         if args.distort_w_test or args.distort_act_test:
             noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
             #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+            noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
             if args.distort_w_test:
                 mode = 'weights'
             if args.distort_act_test:

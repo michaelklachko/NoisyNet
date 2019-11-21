@@ -6,6 +6,7 @@ import numpy as np
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from torch.distributions.uniform import Uniform
+from plot_histograms import plot
 
 # random.seed(1)
 # torch.manual_seed(1)
@@ -278,7 +279,7 @@ class QuantMeasure(nn.Module):
             else:
                 stoch = 0
 
-        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, False)
+        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, self.debug)
 
 
 class AddNoise(InplaceFunction):
@@ -331,7 +332,11 @@ class NoisyConv2d(nn.Conv2d):
             qinput = input
 
         if self.num_bits_weight > 0:
+            #path = 'results/a_q_w_4_fs_L2_0.01_current-0.0-0.0-0.0-0.0_L3-0.0_L3_act-0.0_L2-0.01-0.01-0.01-0.01_actmax-0.0-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.001_grad_clip-0.0_2019-11-19_22-50-36/'
+            #plot(self.weight.detach().cpu().numpy(), values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=True, path=path+'weights_before')
             weight = self.quantize_weights(self.weight)
+            #plot(weight.detach().cpu().numpy(), values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=True, path=path + 'weights_after')
+            #raise(SystemExit)
             # TODO how to quantize biases?
             if self.bias is not None:
                 pass
@@ -350,7 +355,8 @@ class NoisyConv2d(nn.Conv2d):
 
         output = F.conv2d(qinput, weight, bias, self.stride, self.padding, self.dilation, self.groups)
         if self.debug:
-            raise(SystemExit)
+            pass
+            #raise(SystemExit)
         return output
 
 

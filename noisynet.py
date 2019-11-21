@@ -280,6 +280,7 @@ parser.add_argument('--w_scale', type=float, default=1.0, metavar='', help='weig
 parser.add_argument('--early_stop_after', type=int, default=100, metavar='', help='number of epochs to tolerate without improvement')
 parser.add_argument('--var_name', type=str, default='', metavar='', help='variable to test')
 parser.add_argument('--q_a', type=int, default=0, metavar='', help='activation quantization bits')
+parser.add_argument('--q_w', type=int, default=0, metavar='', help='weight quantization bits')
 parser.add_argument('--q_a1', type=int, default=0, metavar='', help='activation quantization bits')
 parser.add_argument('--q_w1', type=int, default=0, metavar='', help='weight quantization bits')
 parser.add_argument('--q_a2', type=int, default=0, metavar='', help='activation quantization bits')
@@ -891,6 +892,10 @@ for current in current_vars:
             print('\n\nSetting weight noise in all layers to {}\n\n'.format(int(args.n_w*100)))
             args.n_w1 = args.n_w2 = args.n_w3 = args.n_w4 = args.n_w
 
+        if args.q_w > 0:
+            print('\n\nQuantizing weights in all layers to {} bits\n\n'.format(int(args.q_w)))
+            args.q_w1 = args.q_w2 = args.q_w3 = args.q_w4 = args.q_w
+
         if args.var_name == "LR":
             args.LR_1 = args.LR_2 = args.LR_3 = args.LR_4 = args.LR
 
@@ -1018,6 +1023,7 @@ for current in current_vars:
                 if args.distort_w_test and args.var_name != '':
                     noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
                     """
                     if args.selection_criteria is None:
                         for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
@@ -1078,7 +1084,7 @@ for current in current_vars:
                 te_acc = np.mean(te_accs, dtype=np.float64)
 
                 print('\n\nRestored Model Accuracy (epoch {:d}): {:.2f}{}{}{}\n\n'.format(init_epoch, te_acc, power_string, noise_string, input_sparsity_string))
-                if not args.distort_w_test:
+                if not args.distort_w_test and args.q_w == 0:
                     raise(SystemExit)
                 best_accuracy = te_acc
                 best_epoch = init_epoch
@@ -1105,6 +1111,7 @@ for current in current_vars:
                 if args.distort_w_test:
                     noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
                     """
                     if args.selection_criteria is None:
                         for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
@@ -1574,6 +1581,7 @@ for current in current_vars:
                 if args.distort_w_test:
                     noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                     #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                    noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
                     avg_te_acc_dist = test_distortion(model, args, val_loader=(test_inputs, test_labels), mode='weights', vars=noise_levels)
                     te_acc_dist_string = ' ({:.2f})'.format(avg_te_acc_dist)
 
