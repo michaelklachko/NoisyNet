@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument('-j', '--workers', default=10, type=int, metavar='N', help='dali: 10, dataparallel: 16')
     parser.add_argument('--epochs', default=150, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
-    parser.add_argument('-b', '--batch-size', default=256, type=int, metavar='N')
+    parser.add_argument('-b', '--batch_size', '--batchsize', '--batch-size', '--bs', default=256, type=int, metavar='N')
     parser.add_argument('--lr', '--LR', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--L1', type=float, default=0.000, metavar='', help='L1 for params')
@@ -113,6 +113,11 @@ def parse_args():
     feature_parser.add_argument('--merge_bn', dest='merge_bn', action='store_true')
     feature_parser.add_argument('--no-merge_bn', dest='merge_bn', action='store_false')
     parser.set_defaults(merge_bn=False)
+
+    feature_parser = parser.add_mutually_exclusive_group(required=False)
+    feature_parser.add_argument('--bn_out', dest='bn_out', action='store_true')
+    feature_parser.add_argument('--no-bn_out', dest='bn_out', action='store_false')
+    parser.set_defaults(bn_out=False)
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--fp16', dest='fp16', action='store_true')
@@ -195,7 +200,9 @@ def load_from_checkpoint(args):
                     if args.debug:
                         print('\tmatched, copying...')
                     param.data = saved_param.data
-            if 'running' in saved_name and 'bn' in saved_name:  #batchnorm stats are not in named_parameters
+                    #if 'bn' in name and 'weight' in name:
+                        #print('\n\n\nbn weight\n', param)
+            if 'running' in saved_name and 'bn' in saved_name and args.track_running_stats:  #batchnorm stats are not in named_parameters
                 matched = True
                 if args.debug:
                     print('\tmatched, copying...')
@@ -845,57 +852,65 @@ def main():
         return  #might fail with DataParallel
 
     if args.resume:
-        model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
+        best_accs = []
+        for s in range(args.num_sims):
+            print('\n\nSimulation', s)
 
-        for param_group in optimizer.param_groups:
-            if args.weight_decay != param_group['weight_decay']:
-                print("\n\nRestored L2: param_group['weight_decay'] {}, Specified L2: args.weight_decay {}\n\nAdjusting...\n\n\n".format(
-                    param_group['weight_decay'], args.weight_decay))
-                param_group['weight_decay'] = args.weight_decay
+            model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
 
-        if args.fp16 and not args.amp:
-            model = model.half()
+            for param_group in optimizer.param_groups:
+                if args.weight_decay != param_group['weight_decay']:
+                    print("\n\nRestored L2: param_group['weight_decay'] {}, Specified L2: args.weight_decay {}\n\nAdjusting...\n\n\n".format(
+                        param_group['weight_decay'], args.weight_decay))
+                    param_group['weight_decay'] = args.weight_decay
 
-        if args.w_max > 0:
-            for n, p in model.named_parameters():
-                if ('conv' in n or 'fc' in n) and 'weight' in n:
-                    # print(n, p.shape)
-                    p.data.clamp_(-args.w_max, args.w_max)
+            if args.fp16 and not args.amp:
+                model = model.half()
 
-        if args.merge_bn:
-            merge_batchnorm(model, args)
+            if args.w_max > 0:
+                for n, p in model.named_parameters():
+                    if ('conv' in n or 'fc' in n) and 'weight' in n:
+                        # print(n, p.shape)
+                        p.data.clamp_(-args.w_max, args.w_max)
 
-        if args.w_max > 0:
-            for n, p in model.named_parameters():
-                if ('conv' in n or 'fc' in n) and 'weight' in n:
-                    # print(n, p.shape)
-                    p.data.clamp_(-0.25, 0.25)
+            if args.merge_bn:
+                merge_batchnorm(model, args)
 
-        if args.distort_w_test or args.distort_act_test:
-            noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
-            #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
-            noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
-            if args.distort_w_test:
-                mode = 'weights'
-            if args.distort_act_test:
-                mode = 'acts'
-            """
-            if args.selection_criteria is None:
-                for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
-                    print('\n\n\n\n************************* Selection Criteria', args.selection_criteria, ' ***********************\n\n\n\n')
+            if args.w_max > 0:
+                for n, p in model.named_parameters():
+                    if ('conv' in n or 'fc' in n) and 'weight' in n:
+                        # print(n, p.shape)
+                        p.data.clamp_(-0.25, 0.25)
+
+            if args.distort_w_test or args.distort_act_test:
+                noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
+                #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
+                if args.distort_w_test:
+                    mode = 'weights'
+                if args.distort_act_test:
+                    mode = 'acts'
+                """
+                if args.selection_criteria is None:
+                    for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
+                        print('\n\n\n\n************************* Selection Criteria', args.selection_criteria, ' ***********************\n\n\n\n')
+                        test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+                else:
                     test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
+                raise(SystemExit)
+                """
+                acc = test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
             else:
-                test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
-            raise(SystemExit)
-            """
-            test_distortion(model, args, val_loader=val_loader, mode=mode, vars=noise_levels)
-        else:
-            print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
-            if (args.q_a > 0 and start_epoch != 0 and args.calculate_running) or args.reset_start_epoch:
-                print('\n\nSetting start_epoch to zero to run validation\n\n')
-                validate(val_loader, model, args, epoch=0, plot_acc=best_acc)
-            else:
-                validate(val_loader, model, args, epoch=start_epoch, plot_acc=best_acc)
+                print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
+                if (args.q_a > 0 and start_epoch != 0 and args.calculate_running) or args.reset_start_epoch:
+                    print('\n\nSetting start_epoch to zero to run validation\n\n')
+                    acc = validate(val_loader, model, args, epoch=0, plot_acc=best_acc)
+                else:
+                    acc = validate(val_loader, model, args, epoch=start_epoch, plot_acc=best_acc)
+
+            best_accs.append(acc)
+
+        print('\n\n{} mean {:.2f} min {:.2f} max {:.2f}\n\n'.format([float('{:.2f}'.format(v)) for v in best_accs], np.mean(best_accs), np.min(best_accs), np.max(best_accs)))
 
         if args.ignore_best_acc:  # if doing training after restoring, save model even if new best accuracy is worse (default=True)
             best_acc = 0

@@ -219,7 +219,7 @@ parser.add_argument('--dropout_conv', type=float, default=0.0, metavar='', help=
 parser.add_argument('--distort_act', dest='distort_act', action='store_true', help='distort activations')
 
 # ======================== Training Settings =======================================
-parser.add_argument('--batch_size', type=int, default=64, metavar='', help='batch size for training')
+parser.add_argument('--batch_size', '--batchsize', '--batch-size', '--bs', type=int, default=64, metavar='', help='batch size for training')
 parser.add_argument('--nepochs', type=int, default=250, metavar='', help='number of epochs to train')
 parser.add_argument('--num_sims', type=int, default=1, metavar='', help='number of simulation runs')
 parser.add_argument('--num_layers', type=int, default=4, metavar='', help='number of layers')
@@ -483,6 +483,8 @@ class Net(nn.Module):
 
         if args.batchnorm and not args.merge_bn:
             bn2 = self.bn2(pool2)
+            #print('\n\nbn2 weights:\n', self.bn2.weight, '\n\nbn2 biases:\n', self.bn2.bias, '\n\nbn2 running mean:\n', self.bn2.running_mean,
+                  #'\n\nbn2 running var:\n', self.bn2.running_var)
             self.pool2_out = bn2
         else:
             self.pool2_out = pool2

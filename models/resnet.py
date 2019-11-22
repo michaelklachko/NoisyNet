@@ -25,7 +25,6 @@ class BasicBlock(nn.Module):
             with torch.no_grad():
                 self.register_buffer('act1_offsets', torch.zeros(1))
                 self.register_buffer('act2_offsets', torch.zeros(1))
-                self.register_buffer('act3_offsets', torch.zeros(1))
                 #distr = Normal(loc=0, scale=args.offset * 4 * torch.ones(act_shape))
                 #offsets1 = torch.cuda.FloatTensor(output.size()).uniform_(-noise, noise)
                 #offsets1 = output * output.new_empty(output.shape).uniform_(-noise, noise)
@@ -58,8 +57,8 @@ class BasicBlock(nn.Module):
             self.layer3 = []
 
         if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
+            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
     def forward(self, x):
         '''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
@@ -157,6 +156,8 @@ class BasicBlock(nn.Module):
                 arrays.append([bias.half().detach().cpu().numpy()])
         else:
             out = self.bn2(out)
+        #print('\n\nbn2 weights:\n', self.bn2.weight, '\n\nbn2 biases:\n', self.bn2.bias, '\n\nbn2 running mean:\n', self.bn2.running_mean,
+                  #'\n\nbn2 running var:\n', self.bn2.running_var)
 
         if args.plot:
             arrays.append([out.half().detach().cpu().numpy()])
@@ -223,9 +224,9 @@ class ResNet(nn.Module):
             self.q_a_first = 0
 
         if self.q_a_first > 0:
-            self.quantize1 = QuantMeasure(self.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
+            self.quantize1 = QuantMeasure(self.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
         if args.q_a > 0:
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug, inplace=args.q_inplace)
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
         self.layer1 = self._make_layer(block, 64)
         self.layer2 = self._make_layer(block, 128, stride=2)
@@ -236,6 +237,9 @@ class ResNet(nn.Module):
         #self.fc = nn.Linear(512, num_classes)
         self.fc = NoisyLinear(512, num_classes, bias=True, num_bits=0, num_bits_weight=args.q_w,
                                    noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+
+        if args.bn_out:
+            self.bn_out = nn.BatchNorm1d(1000, track_running_stats=args.track_running_stats)
 
         for m in self.modules():
             #print(m)
@@ -362,6 +366,9 @@ class ResNet(nn.Module):
 
         if args.plot:
             get_layers(arrays, fc_input, self.fc.weight, x, layer='linear', basic=args.plot_basic, debug=args.debug)
+
+        if args.bn_out:
+            x = self.bn_out(x)
 
         if args.merge_bn and args.plot:
             arrays.append([self.fc.bias.half().detach().cpu().numpy()])
