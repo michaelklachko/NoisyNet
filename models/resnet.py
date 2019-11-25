@@ -63,6 +63,30 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         '''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
             [conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
+
+        if args.distort_pre_act:
+            with torch.no_grad():
+                if self.offset:
+                    if args.debug:
+                        print('\n\nEntering block, first conv:', list(x.shape))
+                    if self.generate_offsets:
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset * self.quantize1.running_max * torch.ones_like(x))
+                        self.act1_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.act1_offsets[0, 0, 0]))
+                        # self.generate_offsets = False
+                    if args.debug:
+                        print('\nact1 before:\n{}\n'.format(x[0, 0, 0]))
+                        print(x.shape, self.act1_offsets.shape)
+                    x = x + self.act1_offsets
+                    if args.debug:
+                        print('\nact1 after:\n{}\n'.format(x[0, 0, 0]))
+                else:
+                    x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                    x = x + x_noise
+
         if args.q_a > 0:
             x = self.quantize1(x)
 
@@ -112,6 +136,29 @@ class BasicBlock(nn.Module):
             arrays.append([out.half().detach().cpu().numpy()])
 
         out = self.relu(out)
+
+        if args.distort_pre_act:
+            with torch.no_grad():
+                if self.offset:
+                    if args.debug:
+                        print('\n\nsecond conv:', list(out.shape))
+                    if self.generate_offsets:
+                        #print('generated offsets')
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset * self.quantize2.running_max * torch.ones_like(out))
+                        self.act2_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.act2_offsets[0,0,0]))
+                        self.generate_offsets = False
+                    if args.debug:
+                        print('\nact2 before:\n{}\n'.format(out[0,0,0]))
+                    out = out + self.act2_offsets
+                    if args.debug:
+                        print('\nact1 after:\n{}\n'.format(out[0, 0, 0]))
+                else:
+                    out_noise = out * torch.cuda.FloatTensor(out.size()).uniform_(-args.noise, args.noise)
+                    out = out + out_noise
 
         if args.q_a > 0:
             out = self.quantize2(out)
@@ -265,6 +312,30 @@ class ResNet(nn.Module):
     def forward(self, x, epoch=0, i=0, acc=0.0):
         if args.print_shapes:
             print('RGB input:', list(x.shape))
+
+        if args.distort_pre_act:
+            with torch.no_grad():
+                if self.offset_input:
+                    if args.debug:
+                        print('\n\nRGB input:', list(x.shape))
+                    if self.generate_offsets:
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset_input * self.quantize1.running_max * torch.ones_like(x))
+                        self.input_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.input_offsets[0, 0, 0]))
+                        if self.offset == 0:  # turn it off here if only generating for inputs
+                            self.generate_offsets = False
+                    if args.debug:
+                        print('\npre act1 before:\n{}\n'.format(x[0, 0, 0]))
+                    x = x + self.input_offsets
+                    if args.debug:
+                        print('\npre act1 after:\n{}\n'.format(x[0, 0, 0]))
+                else:
+                    x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                    x = x + x_noise
+
         if self.q_a_first > 0:
             x = self.quantize1(x)
 
@@ -334,6 +405,30 @@ class ResNet(nn.Module):
         x = x.view(x.size(0), -1)
         if args.print_shapes:
             print('reshaped:', list(x.shape))
+
+        if args.distort_pre_act:
+            with torch.no_grad():
+                if self.offset:
+                    if args.debug:
+                        print('\n\nFC layer input:', list(x.shape))
+                    if self.generate_offsets:
+                        if args.debug:
+                            print('\n\ngenerating offsets\n\n')
+                        distr = Normal(loc=0, scale=args.offset * self.quantize2.running_max * torch.ones_like(x))
+                        self.act_offsets = distr.sample()
+                        if args.debug:
+                            print('\noffsets generated:\n{}\n'.format(self.act_offsets[0, :20]))
+                        self.generate_offsets = False
+                    if args.debug:
+                        print('\npre act before:\n{}\n'.format(x[0, :20]))
+                    x = x + self.act_offsets
+                    if args.debug:
+                        print('\npre act after:\n{}\n'.format(x[0, :20]))
+                        raise(SystemExit)
+                else:
+                    x_noise = x * torch.cuda.FloatTensor(x.size()).uniform_(-args.noise, args.noise)
+                    x = x + x_noise
+
         if args.q_a > 0:
             x = self.quantize2(x)
 

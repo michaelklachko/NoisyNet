@@ -46,6 +46,7 @@ def parse_args():
     parser.add_argument('--debug', dest='debug', action='store_true', help='debug')
     parser.add_argument('--distort_w_test', dest='distort_w_test', action='store_true', help='distort weights during test')
     parser.add_argument('--distort_act', dest='distort_act', action='store_true', help='distort activations')
+    parser.add_argument('--distort_pre_act', dest='distort_pre_act', action='store_true', help='distort pre-activations')
     parser.add_argument('--distort_act_test', dest='distort_act_test', action='store_true', help='distort activations during test')
     parser.add_argument('--noise', default=0, type=float, help='mult weights by uniform noise with this range +/-')
     parser.add_argument('--stochastic', default=0.5, type=float, help='stochastic uniform noise to add before rounding during quantization')
@@ -66,7 +67,8 @@ def parse_args():
     parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to avoid dividing by zero')
     parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
-    parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
+    parser.add_argument('--pctl', default=99.98, type=float, help='percentile to use for input/activation clipping (usually for quantization)')
+    parser.add_argument('--w_pctl', default=0, type=float, help='percentile to use for weights clipping')
     parser.add_argument('--offset', default=0, type=float, help='offset values to add to activations (opamp distortion)')
     parser.add_argument('--offset_input', default=0, type=float, help='offset values to add to model input (opamp distortion)')
     parser.add_argument('--gpu', default=None, type=str, help='GPU to use, if None use all')
@@ -641,7 +643,8 @@ def build_model(args):
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     for epoch in range(start_epoch, args.epochs):
         utils.adjust_learning_rate(optimizer, epoch, args)
-        print('LR {:.5f}'.format(float(optimizer.param_groups[0]['lr'])), 'wd', optimizer.param_groups[0]['weight_decay'], 'L1', args.L1, 'L3', args.L3, 'n_w', args.n_w, 'q_a', args.q_a)
+        print('LR {:.5f}'.format(float(optimizer.param_groups[0]['lr'])), 'wd', optimizer.param_groups[0]['weight_decay'], 'L1', args.L1, 'L3',
+              args.L3, 'n_w', args.n_w, 'q_a', args.q_a, 'act_max', args.act_max, 'bn_out', args.bn_out)
         #for param_group in optimizer.param_groups:
             #param_group['lr'] = args.lr
             #param_group['weight_decay'] = args.weight_decay
@@ -726,8 +729,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             optimizer.step()
 
             if i % args.print_freq == 0:
-                print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {} | {:.2f}'.format(
-                    str(datetime.now())[:-7], epoch, i, train_loader_len, optimizer.param_groups[0]["lr"], np.mean(tr_accs, dtype=np.float64)))
+                print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {:.5f} | {:.2f}'.format(
+                    str(datetime.now())[:-7], epoch, i, train_loader_len, float(optimizer.param_groups[0]["lr"]), np.mean(tr_accs, dtype=np.float64)))
 
             if args.q_a > 0 and args.calculate_running and epoch == start_epoch and i == 5:
                 print('\n')
@@ -743,6 +746,17 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                     if ('conv' in n or 'fc' in n) and 'weight' in n:
                         #print(n, p.shape)
                         p.data.clamp_(-args.w_max, args.w_max)
+
+            if args.w_pctl > 0:
+                for n, p in model.named_parameters():
+                    if ('conv' in n or 'fc' in n) and 'weight' in n:
+                        #print(n, p.shape)
+                        pctl_pos, _ = torch.kthvalue(p[p > 0].flatten(), int(p[p > 0].numel() * args.w_pctl / 100.))
+                        pctl_neg, _ = torch.kthvalue(torch.abs(p[p < 0]).flatten(), int(p[p < 0].numel() * args.w_pctl / 100.))
+                        if args.debug and epoch == 0 and i == 0:
+                            print('pctl {:.3f}   (w_min, w_max) ({:.3f}, {:.3f})   (pctl_neg, pctl_pos) ({:.3f}, {:.3f})'.format(
+                                args.w_pctl, p.min().item(), p.max().item(), -pctl_neg.item(), pctl_pos.item()))
+                        p.data.clamp_(-pctl_neg, pctl_pos)
 
         acc = validate(val_loader, model, args, epoch=epoch)
         if acc > best_acc:
@@ -867,12 +881,6 @@ def main():
             if args.fp16 and not args.amp:
                 model = model.half()
 
-            if args.w_max > 0:
-                for n, p in model.named_parameters():
-                    if ('conv' in n or 'fc' in n) and 'weight' in n:
-                        # print(n, p.shape)
-                        p.data.clamp_(-args.w_max, args.w_max)
-
             if args.merge_bn:
                 merge_batchnorm(model, args)
 
@@ -880,7 +888,18 @@ def main():
                 for n, p in model.named_parameters():
                     if ('conv' in n or 'fc' in n) and 'weight' in n:
                         # print(n, p.shape)
-                        p.data.clamp_(-0.25, 0.25)
+                        p.data.clamp_(-args.w_max, args.w_max)
+
+            if args.w_pctl > 0:
+                for n, p in model.named_parameters():
+                    if ('conv' in n or 'fc' in n) and 'weight' in n:
+                        #print(n, p.shape)
+                        pctl_pos, _ = torch.kthvalue(p[p > 0].flatten(), int(p[p > 0].numel() * args.w_pctl / 100.))
+                        pctl_neg, _ = torch.kthvalue(torch.abs(p[p < 0]).flatten(), int(p[p < 0].numel() * args.w_pctl / 100.))
+                        if args.debug:
+                            print('pctl {:.3f}   (w_min, w_max) ({:.3f}, {:.3f})   (pctl_neg, pctl_pos) ({:.3f}, {:.3f})'.format(
+                                args.w_pctl, p.min().item(), p.max().item(), -pctl_neg.item(), pctl_pos.item()))
+                        p.data.clamp_(-pctl_neg.item(), pctl_pos.item())
 
             if args.distort_w_test or args.distort_act_test:
                 noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]

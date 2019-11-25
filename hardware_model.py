@@ -231,8 +231,8 @@ class QuantMeasure(nn.Module):
             if self.calculate_running:
                 if self.min_value < 0:  # quantizing weights (ReLU is always positive)
                     pctl_pos, _ = torch.kthvalue(input[input > 0].flatten(), int(input[input > 0].numel() * self.pctl / 100.))
-                    pctl_neg, _ = -torch.kthvalue(input[input < 0].flatten(), int(input[input < 0].numel() * self.pctl / 100.))
-                    self.running_min = pctl_neg
+                    pctl_neg, _ = torch.kthvalue(torch.abs(input[input < 0]).flatten(), int(input[input < 0].numel() * self.pctl / 100.))
+                    self.running_min = -pctl_neg
                     self.running_max = pctl_pos
                     self.calculate_running = False
                     min_value = self.running_min.item()
@@ -249,13 +249,19 @@ class QuantMeasure(nn.Module):
                         pctl, _ = torch.kthvalue(input.flatten(), int(input.numel() * self.pctl / 100.))
                     # print('input.shape', input.shape, 'pctl.shape', pctl.shape)
                     # self.running_max = pctl
-                    max_value = input.max().item()  # self.running_max
+                    # max_value = pctl
+                    max_value = input.max().item()
+                    # raise(SystemExit)
                     self.running_list.append(pctl)  # self.running_max)
                     # self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
                     if self.debug:
-                        print('{} gpu {} self.calculate_running {}  max value (pctl/running/actual) {:.3f}/{:.1f}/{:.1f}'.format(
-                            list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item() * 0.95, input.max().item()))
+                        print('{} gpu {} self.calculate_running {}  max value (pctl/actual) {:.3f}/{:.1f}'.format(
+                            list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item()))
             else:
+                if self.debug:
+                    pctl, _ = torch.kthvalue(input.flatten(), int(input.numel() * self.pctl / 100.))
+                    print('{} gpu {} self.calculate_running {}  max value (pctl/actual) {:.3f}/{:.1f}'.format(
+                            list(input.shape), torch.cuda.current_device(), self.calculate_running, pctl.item(), input.max().item()))
                 if self.min_value < 0 and self.running_min < 0:
                     min_value = self.running_min.item()
                     max_value = self.running_max.item()
@@ -279,7 +285,7 @@ class QuantMeasure(nn.Module):
             else:
                 stoch = 0
 
-        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, self.debug)
+        return UniformQuantize().apply(input, self.num_bits, min_value, max_value, stoch, self.inplace, False)
 
 
 class AddNoise(InplaceFunction):
