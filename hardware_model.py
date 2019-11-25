@@ -423,6 +423,40 @@ class NoisyLinear(nn.Linear):
         return output
 
 
+def distort_tensor(self, args, input, scale=0, stop=False):   # TODO this is horrible
+    with torch.no_grad():
+        if args.offset or args.offset_input:
+            if args.debug:
+                print('\n\ndistorting {}'.format(list(input.shape)))
+            if self.generate_offsets:
+                distr = Normal(loc=0, scale=scale * torch.ones_like(input))
+                if '224' in input.shape:  # TODO fragile
+                    self.input_offsets = distr.sample()
+                elif stop:
+                    self.act2_offsets = distr.sample()
+                else:
+                    self.act1_offsets = distr.sample()
+
+                offsets = distr.sample()
+
+                if stop:  # last layer, fix generated offsets
+                    self.generate_offsets = False
+
+            if '224' in input.shape:  # TODO fragile
+                out = input + self.input_offsets
+            elif stop:
+                out = input + self.act2_offsets
+            else:
+                out = input + self.act1_offsets
+
+            if args.debug:
+                print('\nbefore  {}\noffsets {}\nafter   {}\n'.format(
+                    input.flatten().detach().cpu().numpy()[:6], offsets.flatten().detach().cpu().numpy()[:6], out.flatten().detach().cpu().numpy()[:6]))
+        else:
+            noise = input * torch.cuda.FloatTensor(input.size()).uniform_(-args.noise, args.noise)
+            out = input + noise
+    return out
+
 '''
 class UniformQuantizeOrig(InplaceFunction):
 
