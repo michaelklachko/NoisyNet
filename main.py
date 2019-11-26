@@ -78,6 +78,7 @@ def parse_args():
     parser.add_argument('--selected_weights', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
     parser.add_argument('--selection_criteria', type=str, default=None, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
     parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
+    parser.add_argument('--scale_weights', type=float, default=0, metavar='', help='multiply weights by this amount')
     parser.add_argument('--debug_noise', dest='debug_noise', action='store_true', help='debug when adding noise to weights')
     parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
 
@@ -378,7 +379,16 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
 
         for s in range(args.num_sims):
             if mode == 'weights':
-                distort_weights(args, params, grads=grads, values=values, pctls=pctls, noise=noise)
+                if args.scale_weights > 0:
+                    with torch.no_grad():
+                        for p in params:
+                            #print('\n', p.flatten()[:6])
+                            #distort_weights(args, params, noise=0.01)
+                            p.data = args.scale_weights * p.data
+                            #print(p.flatten()[:6])
+                else:
+                    distort_weights(args, params, grads=grads, values=values, pctls=pctls, noise=noise)
+
             if isinstance(val_loader, tuple):   #TODO cifar-10
                 inputs, labels = val_loader
                 te_accs = []

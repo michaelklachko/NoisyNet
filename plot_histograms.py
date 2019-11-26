@@ -141,8 +141,8 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
                     weight_block_sums_sep.append(weight_block_sum_neg)
 
                 #print('\nweight_block_sums[0]:', weight_block_sums[0].shape, 'num_blocks, in_neurons:', num_blocks, in_neurons)
-                weight_sums_blocked = torch.cat(weight_block_sums, 0).view(num_blocks, in_neurons, 1)
-                weight_sums_sep_blocked = torch.cat(weight_block_sums_sep, 0).view(num_blocks * 2, in_neurons, 1)
+                weight_sums_blocked = torch.cat(weight_block_sums, 0).contiguous().view(num_blocks, in_neurons, 1)
+                weight_sums_sep_blocked = torch.cat(weight_block_sums_sep, 0).contiguous().view(num_blocks * 2, in_neurons, 1)
 
                 inputs = input.permute(1, 0).view(1, in_neurons, bs)  # [in_neurons, bs]
 
@@ -157,12 +157,93 @@ def get_layers(arrays, input, weight, output, stride=1, padding=1, layer='conv',
         for source_sep in sources_sep:
             arrays.append([source_sep])
 
+        input_sums_total = []
+        for block_size in block_sizes:
+            """
+            The blocking done below is done along different dimension from the blocking above
+            
+            inputs: (bs, fm_in, x, y) --> (fm_in, bs, x, y) --> (fm_in, -1) --> (fm_in, 1, -1)
+    
+            weights: (fm_out, fm_in, fs, fs)
+            
+            1. Split input feature maps into groups of block_size
+            2. Do 1x1 convolution on each group  [bs, 64, 1, 1] which is really just [bs, 64] goes through weight slices: [fm_out, 64, 1, 1], which is really just [fm_out, 64]. 
+            3. The result is [bs, fm_out] - compare with 1x1 conv output: [bs, 64, x, y] --> [bs, fm_out, x, y], times filter_size^2. 
+            """
+            input_sums = []
+
+            if layer == 'conv':
+                bs, fm_in, x, y = list(input.shape)
+                fm_out, fm_in, fs, fs = list(weight.shape)
+                num_blocks = max(fm_in // block_size, 1)
+                if debug:
+                    print('\n\nnum blocks, bs, fm_in, x, y, fm_out, fm_in, fs, fs')
+                    print(num_blocks, bs, fm_in, x, y, fm_out, fm_in, fs, fs)
+
+                for i in range(num_blocks):
+                    input_block = input[:, i:i+block_size, :, :]
+                    if debug:
+                        #print('\nweight_block shape', weight_block.shape)
+                        print('weight[:, i:i + block_size, :, :].shape', weight[:, i:i+block_size, :, :].shape)
+                    weight_block = weight[:, i:i+block_size, :, :].view(fm_out, min(block_size, fm_in), -1)  # (fm_out, fm_in, fs, fs) --> (fm_out, 64, fs, fs)
+
+                    weight_block_pos = weight_block.clone()
+                    weight_block_neg = weight_block.clone()
+                    weight_block_pos[weight_block_pos > 0] = 1
+                    weight_block_pos[weight_block_pos < 0] = 0
+                    weight_block_neg[weight_block_neg > 0] = 0
+                    weight_block_neg[weight_block_neg < 0] = -1
+
+                    for j in range(fs * fs):
+                        weight_block_pos_1x1 = weight_block_pos[:, :, j].view(fm_out, min(block_size, fm_in), 1, 1)     # (fm_out, 64, fs, fs) --> (fm_out, 64, 1, 1)
+                        weight_block_neg_1x1 = weight_block_neg[:, :, j].view(fm_out, min(block_size, fm_in), 1, 1)
+
+                        input_sum_block_pos = F.conv2d(input_block, weight_block_pos_1x1, stride=stride, padding=0)  # (bs, fm_out, x, y)
+                        input_sum_block_neg = F.conv2d(input_block, weight_block_neg_1x1, stride=stride, padding=0)
+                        input_sums.append(input_sum_block_pos)
+                        input_sums.append(input_sum_block_neg)
+                if debug:
+                    print(len(input_sums))
+                    print(input_sum_block_neg.shape)
+                    print(bs ,num_blocks ,fs ,fs, fm_out, x, y)
+                    print(2 * bs * num_blocks * fs * fs, fm_out, x, y)
+                    print(stride, padding)
+                input_sums = torch.cat(input_sums, 0).contiguous().view(2 * bs * num_blocks * fs * fs, fm_out, x//stride, y//stride)  # the view is just a test
+
+            elif layer == 'linear':
+                bs, fm_in = list(input.shape)
+                num_blocks = max(fm_in // block_size, 1)
+
+                for i in range(num_blocks):
+                    # weights are [1000, 512], inputs are [bs, 512], outputs [bs, 1000]
+                    input_block = input[:, i:i + block_size]
+                    weight_block = weight[:, i:i + block_size]
+
+                    weight_block_pos = weight_block.clone()
+                    weight_block_neg = weight_block.clone()
+                    weight_block_pos[weight_block_pos > 0] = 1
+                    weight_block_pos[weight_block_pos < 0] = 0
+                    weight_block_neg[weight_block_neg > 0] = 0
+                    weight_block_neg[weight_block_neg < 0] = -1
+
+                    input_sum_block_pos = F.linear(input_block, weight_block_pos)  # (bs, 512).(512, 1000)=(bs, 1000)
+                    input_sum_block_neg = F.linear(input_block, weight_block_neg)
+                    input_sums.append(input_sum_block_pos)
+                    input_sums.append(input_sum_block_neg)
+
+                input_sums = torch.cat(input_sums, 0).contiguous().view(2 * bs * num_blocks, 1000)
+
+            input_sums_total.append(input_sums.half().detach().cpu().numpy())
+
+        for input_sum in input_sums_total:
+            arrays.append([input_sum])
+
         """
         blocks = []
         pos_blocks = []
         neg_blocks = []
-
-        f = weight.permute(2, 3, 0, 1).contiguous().view(-1, fan_out, 1, 1)
+        
+        f = weight.permute(2, 3, 0, 1).contiguous().view(-1, fan_out, 1, 1)  # the whole receptive field becomes a single vector
 
         for b in range(num_blocks):
             if layer == 'conv':
@@ -388,7 +469,7 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
         for c, name in zip(range(columns), names):
             array = layer[c]
             if normalize:
-                if name == 'input':
+                if name == 'input':   # input sums are multiplied with weights set to one, so w_max = 1
                     max_input = np.max(array[0])
                     if max_input == 0:
                         print('\n\nLayer {}, array {} (column {}) error when normalizing the array\nmax_input = {} = zero\n'
@@ -415,6 +496,8 @@ def plot_grid(layers, names, path=None, filename='', info=None, pctl=99.9, label
                     array[0] = array[0] / thr
                 elif name == 'weight sums diff' or name == 'weight sums diff blocked':
                     array[0] = array[0] / thr
+                elif 'input sums' in name:    # input sums are multiplied with weights set to one, so w_max = 1
+                    array[0] = array[0] / max_input
                 else:
                     array[0] = array[0] / (max_input * thr)  # TODO fragile - inputs and weights must be the first two arrays in each layer for this to work
                 # print('after\n', array[0].ravel()[20:40])

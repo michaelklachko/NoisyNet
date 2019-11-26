@@ -86,8 +86,14 @@ class BasicBlock(nn.Module):
             print('conv1:', list(out.shape))
 
         if args.merge_bn:
-            bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
+            bias = self.bn1.bias.data.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
+            if args.scale_weights > 0:
+                #print('\nBefore')
+                #print(bias.flatten()[:6])
+                bias = bias * args.scale_weights
+                #print(bias.flatten()[:6])
+
             out += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])
@@ -120,8 +126,10 @@ class BasicBlock(nn.Module):
             print('conv2:', list(out.shape))
 
         if args.merge_bn:
-            bias = self.bn2.bias.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * \
+            bias = self.bn2.bias.data.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
+            if args.scale_weights > 0:
+                bias = bias * args.scale_weights
             out += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])
@@ -138,8 +146,10 @@ class BasicBlock(nn.Module):
             if args.print_shapes:
                 print('conv3 (shortcut downsampling):', list(out.shape))
             if args.merge_bn:
-                bias = self.bn3.bias.view(1, -1, 1, 1) - self.bn3.running_mean.data.view(1, -1, 1, 1) * \
+                bias = self.bn3.bias.data.view(1, -1, 1, 1) - self.bn3.running_mean.data.view(1, -1, 1, 1) * \
                        self.bn3.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn3.running_var.data.view(1, -1, 1, 1) + args.eps)
+                if args.scale_weights > 0:
+                    bias = bias * args.scale_weights
                 residual += bias
             else:
                 residual = self.bn3(residual)
@@ -258,8 +268,10 @@ class ResNet(nn.Module):
             get_layers(arrays, conv1_input, self.conv1.weight, x, stride=2, padding=3, layer='conv', basic=args.plot_basic, debug=args.debug)
 
         if args.merge_bn:
-            bias = self.bn1.bias.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
+            bias = self.bn1.bias.data.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
+            if args.scale_weights > 0:
+                bias = args.scale_weights * bias
             x += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])
@@ -322,20 +334,20 @@ class ResNet(nn.Module):
         if args.plot:
             arrays.append([x.half().detach().cpu().numpy()])
 
-        if args.plot:
             if args.plot_basic:
                 names = ['input', 'weights', 'vmm']
             else:
                 #names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
                 if args.block_size is None:
                     names = ['input', 'weights', 'vmm', 'vmm diff', 'source_full', 'source 128', 'source 64', 'source_32',
-                             'source full diff', 'source 128 diff', 'source 64 diff', 'source 32 diff']
+                             'source full diff', 'source 128 diff', 'source 64 diff', 'source 32 diff',
+                             'input sums full diff', 'input sums 128 diff', 'input sums 64 diff', 'input sums 32 diff']
                 else:
                     if args.block_size == 0:
                         block_size = 'full'
                     else:
                         block_size = str(args.block_size)
-                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source ' + block_size, 'source diff ' + block_size]
+                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source ' + block_size, 'source diff ' + block_size, 'input sums diff ' + block_size]
 
                 args.tag += '_full'
 

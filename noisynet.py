@@ -299,6 +299,7 @@ parser.add_argument('--selected_weights', type=float, default=0, metavar='', hel
 parser.add_argument('--noise_values', type=float, default=0, metavar='', help='reduce noise for this fraction (%) of weights by selected_weights_noise_scale')
 parser.add_argument('--selection_criteria', type=str, default=None, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
 parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
+parser.add_argument('--scale_weights', type=float, default=0, metavar='', help='multiply weights by this amount')
 parser.add_argument('--stochastic', type=float, default=0.5, metavar='', help='stochastic uniform noise to add before rounding during quantization')
 parser.add_argument('--pctl', default=99.98, type=float, help='percentile to show when plotting')
 parser.add_argument('--seed', type=int, default=None, metavar='', help='random seed')
@@ -1023,9 +1024,12 @@ for current in current_vars:
                     merge_batchnorm(model, args)
 
                 if args.distort_w_test and args.var_name != '':
-                    noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
-                    #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
-                    noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
+                    if args.scale_weights > 0:
+                        noise_levels = [1, 0.5, 0.1, 0.01, 0.98, 0.96, 0.94, 0.92, 0.9, 0.88, 0.86, 0.84, 0.82, 0.8]
+                    else:
+                        noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
+                        #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
+                        noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
                     """
                     if args.selection_criteria is None:
                         for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
