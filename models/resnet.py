@@ -61,6 +61,7 @@ class BasicBlock(nn.Module):
             self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
     def forward(self, x):
+
         '''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
             [conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
 
@@ -93,6 +94,12 @@ class BasicBlock(nn.Module):
                 #print(bias.flatten()[:6])
                 bias = bias * args.scale_weights
                 #print(bias.flatten()[:6])
+            if args.scale_bias > 0 and args.test_temp > 0:
+                # bias = bias ** (1. - (args.temperature - 25.) / 12.)
+                #print('\n\nBias\n', args.test_temp + 273., args.temperature + 273., args.test_temp + 273. / args.temperature + 273.)
+                #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
+                bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
+
 
             out += bias
             if args.plot:
@@ -130,6 +137,11 @@ class BasicBlock(nn.Module):
                    self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
             if args.scale_weights > 0:
                 bias = bias * args.scale_weights
+            if args.scale_bias > 0 and args.test_temp > 0:
+                #bias = bias ** (1. - (args.temperature - 25.) / 12.)
+                #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
+                bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
+
             out += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])
@@ -150,6 +162,11 @@ class BasicBlock(nn.Module):
                        self.bn3.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn3.running_var.data.view(1, -1, 1, 1) + args.eps)
                 if args.scale_weights > 0:
                     bias = bias * args.scale_weights
+                if args.scale_bias > 0 and args.test_temp > 0:
+                    # bias = bias ** (1. - (args.temperature - 25.) / 12.)
+                    #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
+                    bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
+
                 residual += bias
             else:
                 residual = self.bn3(residual)
@@ -244,6 +261,7 @@ class ResNet(nn.Module):
         return nn.Sequential(*blocks)
 
     def forward(self, x, epoch=0, i=0, acc=0.0):
+
         if args.print_shapes:
             print('RGB input:', list(x.shape))
 
@@ -272,6 +290,10 @@ class ResNet(nn.Module):
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
             if args.scale_weights > 0:
                 bias = args.scale_weights * bias
+            if args.scale_bias > 0 and args.test_temp > 0:
+                # bias = bias ** (1. - (args.temperature - 25.) / 12.)
+                #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
+                bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
             x += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])

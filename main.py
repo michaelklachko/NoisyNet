@@ -67,6 +67,7 @@ def parse_args():
     parser.add_argument('--eps', default=1e-7, type=float, help='epsilon to add to avoid dividing by zero')
     parser.add_argument('--grad_clip', default=0, type=float, help='max value of gradients')
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
+    parser.add_argument('--scale_bias', default=0, type=float, help='scale bias by this amount (merge_bn bias)')
     parser.add_argument('--pctl', default=99.98, type=float, help='percentile to use for input/activation clipping (usually for quantization)')
     parser.add_argument('--w_pctl', default=0, type=float, help='percentile to use for weights clipping')
     parser.add_argument('--offset', default=0, type=float, help='offset values to add to activations (opamp distortion)')
@@ -79,6 +80,8 @@ def parse_args():
     parser.add_argument('--selection_criteria', type=str, default=None, metavar='', help='how to choose important weights: "weight_magnitude", "grad_magnitude", "combined"')
     parser.add_argument('--selected_weights_noise_scale', type=float, default=0, metavar='', help='multiply noise for selected_weights by this amount')
     parser.add_argument('--scale_weights', type=float, default=0, metavar='', help='multiply weights by this amount')
+    parser.add_argument('--test_temp', type=float, default=0, metavar='', help='temperature sensitivity coefficient, multiply weights by this amount')
+    parser.add_argument('--temperature', type=float, default=0, metavar='', help='temperature in Celcius (affects the weights, see test_temp param)')
     parser.add_argument('--debug_noise', dest='debug_noise', action='store_true', help='debug when adding noise to weights')
     parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
 
@@ -382,10 +385,29 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
                 if args.scale_weights > 0:
                     with torch.no_grad():
                         for p in params:
+
                             #print('\n', p.flatten()[:6])
                             #distort_weights(args, params, noise=0.01)
                             p.data = args.scale_weights * p.data
                             #print(p.flatten()[:6])
+
+                elif args.test_temp > 0:
+                    with torch.no_grad():
+                        for p in params:
+                            if list(p.shape) == [64, 64, 3, 3]:
+                                #p.data = args.test_temp * p.data ** args.temperature
+                                #p.data = p.data ** (1. - (args.temperature - 25.) / 12.)
+                                print('\n\nValues', args.test_temp + 273., noise + 273., (p.data.abs() / p.data.abs().max()).cpu().numpy().flatten()[:6],
+                                      (args.test_temp + 273.) / (noise + 273.))
+                                print('\nBefore', p.data.cpu().numpy().flatten()[:6])
+                            #p.data = p.data.sign() * p.data.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
+                            #p.data = p.data * p.data.abs().max() * (p.data.abs() / p.data.abs().max()) ** ((args.test_temp + 273.) / (noise + 273.))
+                            p.data = p.data.sign() * p.data.abs().max() * (p.data.abs() / p.data.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.))
+                            #p.data = p.data.sign() * p.data.abs().max() * (p.data.abs() / p.data.abs().max()) ** (1. - (noise - 25.) / 12.)
+                            if list(p.shape) == [64, 64, 3, 3]:
+                                print('After ', p.data.cpu().numpy().flatten()[:6])
+                                #p.data = p.data ** (1. - (args.temperature - 25.) / 12.)
+                                #p.data = p.data ** (args.test_temp + 273. / noise + 273.)
                 else:
                     distort_weights(args, params, grads=grads, values=values, pctls=pctls, noise=noise)
 
@@ -805,7 +827,7 @@ def main():
     if args.n_w_test > 0:
         print('\n\nAdding {:.1f}% noise to weights during test\n\n'.format(100.*args.n_w_test))
 
-    if args.var_name is not None:
+    if False and args.var_name is not None:
         total_list = []
         if args.var_name == 'pctl':
             var_list = [99.94, 99.95, 99.96, 99.97, 99.98, 99.99, 99.992, 99.994, 99.996, 99.998, 99.999]
@@ -915,6 +937,8 @@ def main():
                 noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                 #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                 noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
+                noise_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]
+                noise_levels = [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40]
                 if args.distort_w_test:
                     mode = 'weights'
                 if args.distort_act_test:
