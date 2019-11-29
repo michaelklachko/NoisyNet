@@ -173,6 +173,9 @@ class MobileNetV2(nn.Module):
 
         self.fc1 = nn.Linear(self.last_channel, num_classes)
 
+        if args.bn_out:
+            self.bn_out = nn.BatchNorm1d(1000, track_running_stats=args.track_running_stats)
+
         if args.q_a > 0:
             self.quantize = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl / 100, debug=args.debug_quant)
 
@@ -197,6 +200,9 @@ class MobileNetV2(nn.Module):
         if args.q_a > 0:
             x = self.quantize(x)
         x = self.fc1(x)
+
+        if args.bn_out:
+            x = self.bn_out(x)
 
         if args.plot:
             names = ['input', 'weights', 'vmm', 'vmm diff', 'bias', 'weight sums', 'weight sums diff']
