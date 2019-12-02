@@ -20,7 +20,7 @@ import torch.nn.functional as F
 #import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
 from models.resnet import ResNet18
-from models.mobilenet import mobilenet_v2
+from models.mobilenet import mobilenet_v2  #MobileNetV2
 
 import utils
 from hardware_model import QuantMeasure
@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
     parser.add_argument('-b', '--batch_size', '--batchsize', '--batch-size', '--bs', default=256, type=int, metavar='N')
     parser.add_argument('--lr', '--LR', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
+    parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma on schedule.')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--L1', type=float, default=0.000, metavar='', help='L1 for params')
     parser.add_argument('--wd', '--L2', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
@@ -84,6 +85,8 @@ def parse_args():
     parser.add_argument('--temperature', type=float, default=0, metavar='', help='temperature in Celcius (affects the weights, see test_temp param)')
     parser.add_argument('--debug_noise', dest='debug_noise', action='store_true', help='debug when adding noise to weights')
     parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
+    parser.add_argument('--warmup', action='store_true', help='set lower initial learning rate to warm up the training')
+    parser.add_argument('--lr-decay', type=str, default='step', help='mode for learning rate decay')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -612,9 +615,10 @@ def build_model(args):
             print("\n\n\tTraining {}\n\n".format(args.arch))
 
     if args.arch == 'mobilenet_v2':
-        #model = models.mobilenet_v2(pretrained=args.pretrained)
-        #model = MobileNetV2()
         model = mobilenet_v2(args)
+        if args.pretrained:
+            #model = MobileNetV2()
+            model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/mobilenet_v2-b0353104.pth'))
     else:
         model = ResNet18(args)
         if args.pretrained:
@@ -673,8 +677,9 @@ def build_model(args):
 
 
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
+    best_epoch = start_epoch
     for epoch in range(start_epoch, args.epochs):
-        utils.adjust_learning_rate(optimizer, epoch, args)
+        #utils.adjust_learning_rate(optimizer, epoch, args)
         print('LR {:.5f}'.format(float(optimizer.param_groups[0]['lr'])), 'wd', optimizer.param_groups[0]['weight_decay'], 'L1', args.L1, 'L3',
               args.L3, 'n_w', args.n_w, 'q_a', args.q_a, 'act_max', args.act_max, 'bn_out', args.bn_out)
         #for param_group in optimizer.param_groups:
@@ -698,6 +703,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 target = target.cuda(non_blocking=True)
             if args.fp16 and not args.amp:
                 images = images.half()
+
+            utils.adjust_learning_rate(args, optimizer, epoch, i, train_loader_len)
 
             output = model(images, epoch=epoch, i=i)
             loss = criterion(output, target)
@@ -793,11 +800,14 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
         acc = validate(val_loader, model, args, epoch=epoch)
         if acc > best_acc:
             best_acc = acc
+            best_epoch = epoch
             torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc,
                         'optimizer': optimizer.state_dict()}, 'checkpoints/' + args.tag + '.pth')
 
         if args.dali:
             train_loader.reset()
+
+    return best_acc, best_epoch
 
 
 def main():
@@ -897,12 +907,16 @@ def main():
         #raise (SystemExit)
         return  #might fail with DataParallel
 
-    if args.resume:
+    if args.resume or args.pretrained:
         best_accs = []
         for s in range(args.num_sims):
             print('\n\nSimulation', s)
 
-            model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
+            if args.pretrained:
+                model, criterion, optimizer = build_model(args)
+                best_acc, start_epoch = 0, 0
+            else:
+                model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
 
             for param_group in optimizer.param_groups:
                 if args.weight_decay != param_group['weight_decay']:
@@ -984,8 +998,8 @@ def main():
                 m.calculate_running = True
                 m.running_list = []
 
-    train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args)
-
+    best_acc, best_epoch = train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args)
+    print('\n\nBest Accuracy {:.2f} (epoch {:d}\n\n'.format(best_acc, best_epoch))
 
 if __name__ == '__main__':
     main()
