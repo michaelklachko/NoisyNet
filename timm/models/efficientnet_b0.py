@@ -396,11 +396,7 @@ def resolve_bn_args(kwargs):
     return bn_args
 
 
-_SE_ARGS_DEFAULT = dict(
-    gate_fn=sigmoid,
-    act_layer=None,
-    reduce_mid=False,
-    divisor=1)
+_SE_ARGS_DEFAULT = dict(gate_fn=sigmoid, act_layer=None, reduce_mid=False, divisor=1)
 
 
 def resolve_se_args(kwargs, in_chs, act_layer=None):
@@ -469,9 +465,7 @@ class SqueezeExcite(nn.Module):
 
 
 class ConvBnAct(nn.Module):
-    def __init__(self, in_chs, out_chs, kernel_size,
-                 stride=1, dilation=1, pad_type='', act_layer=nn.ReLU,
-                 norm_layer=nn.BatchNorm2d, norm_kwargs=None):
+    def __init__(self, in_chs, out_chs, kernel_size, stride=1, dilation=1, pad_type='', act_layer=nn.ReLU, norm_layer=nn.BatchNorm2d, norm_kwargs=None):
         super(ConvBnAct, self).__init__()
         norm_kwargs = norm_kwargs or {}
         self.conv = select_conv2d(in_chs, out_chs, kernel_size, stride=stride, dilation=dilation, padding=pad_type)
@@ -693,6 +687,7 @@ class EfficientNet(nn.Module):
 
         # Classifier
         self.classifier = nn.Linear(self.num_features * self.global_pool.feat_mult(), self.num_classes)
+        self.bn_out = nn.BatchNorm1d(self.num_classes)
 
         efficientnet_init_weights(self)
 
@@ -708,7 +703,9 @@ class EfficientNet(nn.Module):
         x = x.flatten(1)
         if self.drop_rate > 0.:
             x = F.dropout(x, p=self.drop_rate, training=self.training)
-        return self.classifier(x)
+        x = self.classifier(x)
+        x = self.bn_out(x)
+        return x
 
 
 def _gen_efficientnet(variant, channel_multiplier=1.0, depth_multiplier=1.0, **kwargs):
