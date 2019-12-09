@@ -1,7 +1,7 @@
 # NoisyNet
 Code for "Improving Noise Tolerance of Mixed-Signal Neural Networks"  https://arxiv.org/abs/1904.01705
 
-Dataset (4 bit CIFAR-10) can be downloaded [here](https://drive.google.com/file/d/1biq3GGG0DXYpC1Nk3hc-fJh8VL06a6bA)
+Dataset (4 bit CIFAR-10) can be downloaded [here](https://drive.google.com/file/d/1lS_R_0pHPhUqzTpYS0C6IrtkgHfHe8cU/view?usp=sharing)
 
 To run the model with `I_max = 1nA` in all layers (~78%):
 ```
