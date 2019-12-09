@@ -999,7 +999,7 @@ def main():
                 m.running_list = []
 
     best_acc, best_epoch = train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args)
-    print('\n\nBest Accuracy {:.2f} (epoch {:d}\n\n'.format(best_acc, best_epoch))
+    print('\n\nBest Accuracy {:.2f} (epoch {:d})\n\n'.format(best_acc, best_epoch))
 
 if __name__ == '__main__':
     main()
