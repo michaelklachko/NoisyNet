@@ -87,6 +87,7 @@ def parse_args():
     parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
     parser.add_argument('--warmup', action='store_true', help='set lower initial learning rate to warm up the training')
     parser.add_argument('--lr-decay', type=str, default='step', help='mode for learning rate decay')
+    parser.add_argument('--zero_out_weights', type=float, default=0, metavar='', help='zero out fraction of random weights)')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -411,6 +412,20 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
                                 print('After ', p.data.cpu().numpy().flatten()[:6])
                                 #p.data = p.data ** (1. - (args.temperature - 25.) / 12.)
                                 #p.data = p.data ** (args.test_temp + 273. / noise + 273.)
+
+                elif args.zero_out_weights > 0:
+                    with torch.no_grad():
+                        for p in params:
+                            mask = torch.cuda.FloatTensor(p.shape).uniform_() > noise #args.zero_out_weights
+                            #print(mask.shape)
+                            #print(mask.flatten()[:16])
+                            #print(mask[mask > noise].flatten()[:16])
+                            #print(torch.where(mask > noise, 1, 0).flatten()[:16])
+                            if False and list(p.shape) == [64, 64, 3, 3]:
+                                print('\nBefore', p.data.cpu().numpy().flatten()[:16])
+                                p.data = p.data * mask
+                                print('After ', p.data.cpu().numpy().flatten()[:16])
+                            p.data = p.data * mask
                 else:
                     distort_weights(args, params, grads=grads, values=values, pctls=pctls, noise=noise)
 
@@ -953,6 +968,7 @@ def main():
                 noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
                 noise_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]
                 noise_levels = [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40]
+                noise_levels = [0.01, 0.02, 0.03, 0.05, 0.10, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
                 if args.distort_w_test:
                     mode = 'weights'
                 if args.distort_act_test:
