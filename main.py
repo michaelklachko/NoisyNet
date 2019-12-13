@@ -87,7 +87,7 @@ def parse_args():
     parser.add_argument('--old_checkpoint', dest='old_checkpoint', action='store_true', help='use this to load checkpoints from Oct 2, 2019 or earlier')
     parser.add_argument('--warmup', action='store_true', help='set lower initial learning rate to warm up the training')
     parser.add_argument('--lr-decay', type=str, default='step', help='mode for learning rate decay')
-    parser.add_argument('--zero_out_weights', type=float, default=0, metavar='', help='zero out fraction of random weights)')
+    parser.add_argument('--stuck_at_weights', type=str, default=None, metavar='', help='stuck at faults for weights: random_zero, random_one, largest_zero, smallest_zero)')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -378,7 +378,10 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
         values = None
 
     for noise in vars:
-        print('\n\nDistorting {} by {:d}%'.format(mode, int(noise * 100)))
+        if args.stuck_at_weights is not None:
+            print('\n\n{}% {} {} stuck at {}'.format(noise * 100., args.stuck_at_weights.split('_')[0], mode, args.stuck_at_weights.split('_')[1]))
+        else:
+            print('\n\nDistorting {} by {:d}%'.format(mode, int(noise * 100)))
         te_acc_dist = []
 
         if args.debug:
@@ -413,19 +416,52 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
                                 #p.data = p.data ** (1. - (args.temperature - 25.) / 12.)
                                 #p.data = p.data ** (args.test_temp + 273. / noise + 273.)
 
-                elif args.zero_out_weights > 0:
+                elif args.stuck_at_weights is not None:
                     with torch.no_grad():
                         for p in params:
-                            mask = torch.cuda.FloatTensor(p.shape).uniform_() > noise #args.zero_out_weights
-                            #print(mask.shape)
-                            #print(mask.flatten()[:16])
-                            #print(mask[mask > noise].flatten()[:16])
-                            #print(torch.where(mask > noise, 1, 0).flatten()[:16])
-                            if False and list(p.shape) == [64, 64, 3, 3]:
-                                print('\nBefore', p.data.cpu().numpy().flatten()[:16])
+                            if args.debug:
+                                print('\n\n{} Noise {}  Mode: {}\n'.format(list(p.shape), noise, args.stuck_at_weights))
+                                print('\nBefore mean, min, max  {:.4f} {:.4f} {:.4f}\n{}'.format(p.mean().item(), p.min().item(), p.max().item(),
+                                                                                                 p.data.cpu().numpy().flatten()[:60]))
+                            if args.stuck_at_weights == 'random_zero':  # stuck at zero faults
+                                mask = torch.cuda.FloatTensor(p.shape).uniform_() > noise
+                                if args.debug:
+                                    print('\nMask: {}\n{}'.format(mask.shape, mask.flatten()[:60]))
+                                #if list(p.shape) != [1000, 512]:  # don't touch output layer weights
+                                #p.data = p.data.div(1.0 - noise) * mask  # should we compensate if we don't know the defect rate?
                                 p.data = p.data * mask
-                                print('After ', p.data.cpu().numpy().flatten()[:16])
-                            p.data = p.data * mask
+
+                            elif args.stuck_at_weights == 'largest_zero':   # zero out most important (largest) weights
+                                thr = 1 - noise
+                                pctl_pos, _ = torch.kthvalue(p[p > 0].flatten(), int(p[p > 0].numel() * thr))
+                                pctl_neg, _ = torch.kthvalue(torch.abs(p[p < 0]).flatten(), int(p[p < 0].numel() * thr))
+                                if args.debug:
+                                    print('thr:', thr, 'pctl_neg', -pctl_neg.item(), 'pctl_pos', pctl_pos.item(), 'num elem', p[p > 0].numel(), 'int(p[p > 0].numel() * thr)', int(p[p > 0].numel() * thr))
+                                p.data[p.data > pctl_pos] = 0
+                                p.data[p.data < -pctl_neg] = 0
+
+                            elif args.stuck_at_weights == 'smallest_zero':  # regular pruning
+                                pctl_pos, _ = torch.kthvalue(p[p > 0].flatten(), int(p[p > 0].numel() * noise))
+                                pctl_neg, _ = torch.kthvalue(torch.abs(p[p < 0]).flatten(), int(p[p < 0].numel() * noise))
+                                p_copy_pos = p.data.clone()
+                                p_copy_neg = p.data.clone()
+                                p_copy_pos[p.data < pctl_pos] = 0
+                                p_copy_neg[p.data > -pctl_neg] = 0
+                                p.data = p_copy_pos + p_copy_neg
+                                if args.debug:
+                                    print('\nthr:', thr, 'pctl_neg', -pctl_neg.item(), 'pctl_pos', pctl_pos.item())
+                                    print('p_copy_neg:', p_copy_neg.min().item(), p_copy_neg.max().item())
+                                    print('p_copy_pos:', p_copy_pos.min().item(), p_copy_pos.max().item())
+
+                            elif args.stuck_at_weights == 'random_one':   # stuck at one faults
+                                mask = torch.cuda.FloatTensor(p.shape).uniform_() > noise
+                                if args.debug:
+                                    print('\nMask: {}\n{}'.format(mask.shape, mask.flatten()[:60]))
+                                p_copy = p.data.clone()
+                                p.data = torch.where(mask, p_copy, p_copy.sign()*p_copy.abs().max())
+
+                            if args.debug:
+                                print('\nAfter  mean, min, max  {:.4f} {:.4f} {:.4f}\n{}'.format(p.mean().item(), p.min().item(), p.max().item(), p.data.cpu().numpy().flatten()[:60]))
                 else:
                     distort_weights(args, params, grads=grads, values=values, pctls=pctls, noise=noise)
 
@@ -457,10 +493,15 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
         avg_te_acc_dist = np.mean(te_acc_dist, dtype=np.float64)
         error_bars.append(te_acc_dist)
         acc_d.append(avg_te_acc_dist)
-        print('\nNoise {:>5.2f}: {}  avg acc {:>5.2f}'.format(noise, [float('{:.2f}'.format(v)) for v in te_acc_dist], avg_te_acc_dist))
+        print('\n{}   Noise {:>5.2f}: {}  avg acc {:>5.2f}'.format(args.stuck_at_weights, noise, [float('{:.2f}'.format(v)) for v in te_acc_dist], avg_te_acc_dist))
+        #raise(SystemExit)
     print('\n\n{}\n{}\n\n\n'.format(vars, [float('{0:.2f}'.format(x)) for x in acc_d]))
     for var, bar, avg_acc in zip(vars, error_bars, acc_d):
         print('Noise', var, [float('{:.2f}'.format(v)) for v in bar], '{:.2f}'.format(avg_acc))
+    print('\n\n{}\n'.format(args.stuck_at_weights))
+    print(vars)
+    print(acc_d)
+    raise (SystemExit)
     if args.distort_w_test and args.var_name is not None:
         return [float('{0:.2f}'.format(x)) for x in acc_d]
     elif args.noise > 0:
@@ -884,6 +925,14 @@ def main():
                         noise_levels = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12]
                         #noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.3]
                         noise_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
+                        if args.stuck_at_weights == 'largest_zero':
+                            noise_levels = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001]  # largest weights stuck at zero
+                        if args.stuck_at_weights == 'random_zero':
+                            noise_levels = [0.0005, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02]  # stuck at 0
+                        if args.stuck_at_weights == 'random_one':
+                            noise_levels = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001]  # stuck at 1
+                        if args.stuck_at_weights == 'smallest_zero':
+                            noise_levels = [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]  # pruning
                         """
                         if args.selection_criteria is None:
                             for args.selection_criteria in ['weight_magnitude', 'grad_magnitude', 'combined']:
@@ -969,6 +1018,14 @@ def main():
                 noise_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]
                 noise_levels = [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40]
                 noise_levels = [0.01, 0.02, 0.03, 0.05, 0.10, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+                if args.stuck_at_weights == 'largest_zero':
+                    noise_levels = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001]  # largest weights stuck at zero
+                if args.stuck_at_weights == 'random_zero':
+                    noise_levels = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02]  # stuck at 0
+                if args.stuck_at_weights == 'random_one':
+                    noise_levels = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001]  # stuck at 1
+                if args.stuck_at_weights == 'smallest_zero':
+                    noise_levels = [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]  # pruning
                 if args.distort_w_test:
                     mode = 'weights'
                 if args.distort_act_test:
