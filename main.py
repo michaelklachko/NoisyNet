@@ -915,6 +915,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                     print('\n\nClipping weights to ({}, {}) range\n\n'.format(-args.w_max, args.w_max))
 
             optimizer.zero_grad()
+
             if args.fp16:
                 loss *= args.loss_scale
                 #print('\nscaled_loss:', loss.item(), '\n\n')
@@ -970,7 +971,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
         if acc > best_acc:
             best_acc = acc
             best_epoch = epoch
-            torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc,
+            if args.local_rank == 0:
+                torch.save({'epoch': epoch + 1, 'arch': args.arch, 'state_dict': model.state_dict(), 'best_acc': best_acc,
                         'optimizer': optimizer.state_dict()}, 'checkpoints/' + args.tag + '.pth')
 
         if args.dali:
