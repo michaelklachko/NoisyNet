@@ -468,16 +468,20 @@ def train_epoch(
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
     for batch_idx, (input, target) in enumerate(loader):
+        #print('\n\nlabels:', target, '\n\n')
+        #raise (SystemExit)
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
+            print('\n\nlabels prefetcher:', target, '\n\n')
             if args.mixup > 0.:
                 lam = 1.
                 if not args.mixup_off_epoch or epoch < args.mixup_off_epoch:
                     lam = np.random.beta(args.mixup, args.mixup)
                 input = input.mul(lam).add_(1 - lam, input.flip(0))
                 target = mixup_target(target, args.num_classes, lam, args.smoothing)
+                print('\n\nlabels mixup:', target, '\n\n')
 
         output = model(input)
 

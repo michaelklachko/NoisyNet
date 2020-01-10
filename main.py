@@ -3,6 +3,7 @@ import os
 import math
 import time
 import warnings
+import logging
 import numpy as np
 from datetime import datetime
 import copy
@@ -17,8 +18,18 @@ import torch.optim
 import torch.utils.data
 import torch.nn.functional as F
 
+try:
+    from apex import amp
+    from apex.parallel import DistributedDataParallel as DDP
+    from apex.parallel import convert_syncbn_model
+    has_apex = True
+except ImportError:
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    has_apex = False
+
 #import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
+from models.efficientnet import efficientnet_b0
 from models.resnet import ResNet18
 from models.mobilenet import mobilenet_v2  #MobileNetV2
 
@@ -88,6 +99,7 @@ def parse_args():
     parser.add_argument('--warmup', action='store_true', help='set lower initial learning rate to warm up the training')
     parser.add_argument('--lr-decay', type=str, default='step', help='mode for learning rate decay')
     parser.add_argument('--stuck_at_weights', type=str, default=None, metavar='', help='stuck at faults for weights: random_zero, random_one, largest_zero, smallest_zero)')
+    parser.add_argument('--sync-bn', action='store_true', help='enabling apex sync BN.')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)
     feature_parser.add_argument('--pretrained', dest='pretrained', action='store_true')
@@ -178,6 +190,23 @@ def parse_args():
 
     args = parser.parse_args()
     return args
+
+
+class FormatterNoInfo(logging.Formatter):
+    def __init__(self, fmt='%(levelname)s: %(message)s'):
+        logging.Formatter.__init__(self, fmt)
+
+    def format(self, record):
+        if record.levelno == logging.INFO:
+            return str(record.getMessage())
+        return logging.Formatter.format(self, record)
+
+
+def setup_default_logging(default_level=logging.INFO):
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(FormatterNoInfo())
+    logging.root.addHandler(console_handler)
+    logging.root.setLevel(default_level)
 
 
 def load_from_checkpoint(args):
@@ -449,7 +478,7 @@ def test_distortion(model, args, val_loader=None, mode='weights', vars=None):
                                 p_copy_neg[p.data > -pctl_neg] = 0
                                 p.data = p_copy_pos + p_copy_neg
                                 if args.debug:
-                                    print('\nthr:', thr, 'pctl_neg', -pctl_neg.item(), 'pctl_pos', pctl_pos.item())
+                                    print('\nthr:', noise, 'pctl_neg', -pctl_neg.item(), 'pctl_pos', pctl_pos.item())
                                     print('p_copy_neg:', p_copy_neg.min().item(), p_copy_neg.max().item())
                                     print('p_copy_pos:', p_copy_pos.min().item(), p_copy_pos.max().item())
 
@@ -668,9 +697,12 @@ def build_model(args):
         if args.pretrained or args.resume:
             print("\n\n\tLoading pre-trained {}\n\n".format(args.arch))
         else:
-            print("\n\n\tTraining {}\n\n".format(args.arch))
+            if args.local_rank == 0:
+                print("\n\n\tTraining {}\n\n".format(args.arch))
 
-    if args.arch == 'mobilenet_v2':
+    if args.arch == 'efficientnet':
+        model = efficientnet_b0(args)
+    elif args.arch == 'mobilenet_v2':
         model = mobilenet_v2(args)
         if args.pretrained:
             #model = MobileNetV2()
@@ -679,8 +711,9 @@ def build_model(args):
         model = ResNet18(args)
         if args.pretrained:
             model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth'))
-
+    """
     model = model.cuda()
+
     if args.fp16 and not args.amp:
         model = model.half()
         #keep BN in FP32 because there's no CUDNN ops for it in FP32 (causes slowdown) TODO need to verify this!:
@@ -688,6 +721,7 @@ def build_model(args):
             for layer in model.modules():
                 if isinstance(layer, nn.BatchNorm2d):
                     layer.float()
+    """
 
     if args.debug:
         utils.print_model(model, args, full=True)
@@ -697,6 +731,79 @@ def build_model(args):
 
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
 
+
+
+
+    args.distributed = False
+    args.num_gpu = 1
+    if 'WORLD_SIZE' in os.environ:
+        args.distributed = int(os.environ['WORLD_SIZE']) > 1
+        if args.distributed and args.num_gpu > 1:
+            logging.warning('Using more than one GPU per process in distributed mode is not allowed. Setting num_gpu to 1.')
+            args.num_gpu = 1
+
+    args.device = 'cuda:0'
+    args.world_size = 1
+    args.rank = 0  # global rank
+    if args.distributed:
+        args.num_gpu = 1
+        args.device = 'cuda:%d' % args.local_rank
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        args.world_size = torch.distributed.get_world_size()
+        args.rank = torch.distributed.get_rank()
+    assert args.rank >= 0
+
+    if args.distributed:
+        logging.info('Training in distributed mode with multiple processes, 1 GPU per process. Process %d, total %d.'
+                     % (args.rank, args.world_size))
+    else:
+        logging.info('Training with a single process on %d GPUs.' % args.num_gpu)
+
+    if args.local_rank == 0:
+        logging.info('Model %s created, param count: %d' %
+                     (args.arch, sum([m.numel() for m in model.parameters()])))
+
+    if args.num_gpu > 1:
+        if args.amp:
+            logging.warning(
+                'AMP does not work well with nn.DataParallel, disabling. Use distributed mode for multi-GPU AMP.')
+            args.amp = False
+        model = nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
+    else:
+        model.cuda()
+
+    optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+
+    use_amp = False
+    if has_apex and args.amp:
+        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
+        use_amp = True
+    if args.local_rank == 0:
+        logging.info('NVIDIA APEX {}. AMP {}.'.format(
+            'installed' if has_apex else 'not installed', 'on' if use_amp else 'off'))
+
+    if args.distributed:
+        if args.sync_bn:
+            try:
+                if has_apex:
+                    model = convert_syncbn_model(model)
+                else:
+                    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+                if args.local_rank == 0:
+                    logging.info('Converted model to use Synchronized BatchNorm.')
+            except Exception as e:
+                logging.error('Failed to enable Synchronized BatchNorm. Install Apex or Torch >= 1.1')
+        if has_apex:
+            model = DDP(model, delay_allreduce=True)
+        else:
+            if args.local_rank == 0:
+                logging.info("Using torch DistributedDataParallel. Install NVIDIA Apex for Apex DDP.")
+            model = DDP(model, device_ids=[args.local_rank])  # can use device str in Torch >= 1.1
+        # NOTE: EMA model does not need to be wrapped by DDP
+
+
+    """
     if args.amp and torch.cuda.device_count() > 1:
         args.gpu = args.local_rank
         torch.cuda.set_device(args.gpu)
@@ -728,6 +835,8 @@ def build_model(args):
             model = DDP(model, delay_allreduce=True)
         else:
             model = torch.nn.DataParallel(model)
+            
+    """
 
     return model, criterion, optimizer
 
@@ -736,7 +845,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
     best_epoch = start_epoch
     for epoch in range(start_epoch, args.epochs):
         #utils.adjust_learning_rate(optimizer, epoch, args)
-        print('LR {:.5f}'.format(float(optimizer.param_groups[0]['lr'])), 'wd', optimizer.param_groups[0]['weight_decay'], 'L1', args.L1, 'L3',
+        if args.local_rank == 0:
+            print('LR {:.5f}'.format(float(optimizer.param_groups[0]['lr'])), 'wd', optimizer.param_groups[0]['weight_decay'], 'L1', args.L1, 'L3',
               args.L3, 'n_w', args.n_w, 'q_a', args.q_a, 'act_max', args.act_max, 'bn_out', args.bn_out)
         #for param_group in optimizer.param_groups:
             #param_group['lr'] = args.lr
@@ -752,6 +862,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
                 train_loader_len = int(train_loader._size / args.batch_size)
                 images = Variable(input)
                 target = Variable(target)
+                #print('\n\nlabels:', target, '\n\n')
+                #raise(SystemExit)
             else:
                 images, target = data
                 train_loader_len = len(train_loader)
@@ -824,8 +936,9 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
             optimizer.step()
 
             if i % args.print_freq == 0:
-                print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {:.5f} | {:.2f}'.format(
-                    str(datetime.now())[:-7], epoch, i, train_loader_len, float(optimizer.param_groups[0]["lr"]), np.mean(tr_accs, dtype=np.float64)))
+                if args.local_rank == 0:
+                    print('{}  Epoch {:>2d} Batch {:>4d}/{:d} LR {:.5f} | {:.2f}'.format(
+                        str(datetime.now())[:-7], epoch, i, train_loader_len, float(optimizer.param_groups[0]["lr"]), np.mean(tr_accs, dtype=np.float64)))
 
             if args.q_a > 0 and args.calculate_running and epoch == start_epoch and i == 5:
                 print('\n')
@@ -868,7 +981,7 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
 
 def main():
     args = parse_args()
-
+    setup_default_logging()
     if args.seed is not None:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -1072,7 +1185,8 @@ def main():
                 m.running_list = []
 
     best_acc, best_epoch = train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args)
-    print('\n\nBest Accuracy {:.2f} (epoch {:d})\n\n'.format(best_acc, best_epoch))
+    if args.local_rank == 0:
+        print('\n\nBest Accuracy {:.2f} (epoch {:d})\n\n'.format(best_acc, best_epoch))
 
 if __name__ == '__main__':
     main()
