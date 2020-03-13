@@ -38,7 +38,7 @@ from hardware_model import QuantMeasure
 #from mn import mobilenet_v2
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
+    parser = argparse.ArgumentParser(description='PyTorch ImageNet Training', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--data', default='/data/imagenet/', metavar='DIR', help='path to dataset')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18')
     parser.add_argument('-j', '--workers', default=10, type=int, metavar='N', help='dali: 10, dataparallel: 16')
@@ -49,10 +49,10 @@ def parse_args():
     parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma on schedule.')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--L1', type=float, default=0.000, metavar='', help='L1 for params')
-    parser.add_argument('--wd', '--L2', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)', dest='weight_decay')
+    parser.add_argument('--wd', '--L2', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay', dest='weight_decay')
     parser.add_argument('--L3', type=float, default=0.000, metavar='', help='L2 for param grads')
-    parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency (default: 10)')
-    parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
+    parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency')
+    parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint')
     parser.add_argument('--tag', default='', type=str, metavar='PATH', help='tag')
     parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
     parser.add_argument('--debug', dest='debug', action='store_true', help='debug')

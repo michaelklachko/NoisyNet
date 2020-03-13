@@ -157,17 +157,17 @@ def prune_weights(args, model):
         return sparsities
 
 def main():
-    parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
+    parser = argparse.ArgumentParser(description='PyTorch MNIST Example', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--dataset', type=str, default='data/mnist.npy', help='path to dataset')
-    parser.add_argument('--batch-size', type=int, default=100, metavar='N', help='input batch size for training (default: 64)')
-    parser.add_argument('--epochs', type=int, default=101, metavar='N', help='number of epochs to train (default: 10)')
-    parser.add_argument('--LR', type=float, default=0.01, metavar='LR', help='learning rate (default: 0.01)')
+    parser.add_argument('--batch-size', type=int, default=100, metavar='N', help='input batch size for training')
+    parser.add_argument('--epochs', type=int, default=101, metavar='N', help='number of epochs to train')
+    parser.add_argument('--LR', type=float, default=0.01, metavar='LR', help='learning rate')
     parser.add_argument('--L2', type=float, default=0.0001, metavar='L2', help='L2 weight decay strength')
     parser.add_argument('--L1_1', type=float, default=5e-4, metavar='L2', help='L1 weight decay strength')
     parser.add_argument('--L1_2', type=float, default=1e-5, metavar='L2', help='L1 weight decay strength')
     parser.add_argument('--L3', type=float, default=0.05, metavar='L3', help='gradient decay strength')
-    parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='SGD momentum (default: 0.5)')
-    parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
+    parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='SGD momentum')
+    parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed')
     parser.add_argument('--use_bias', dest='use_bias', action='store_true', help='use biases')
     parser.add_argument('--q_a', type=int, default=4, metavar='S', help='quantize activations to this number of bits')
     parser.add_argument('--act_max', type=float, default=1.0, help='clipping threshold for activations')

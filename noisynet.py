@@ -17,7 +17,7 @@ import scipy.io
 
 #CUDA_LAUNCH_BLOCKING=1
 
-parser = argparse.ArgumentParser(description='Your project title goes here')
+parser = argparse.ArgumentParser(description='Your project title goes here', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 #parser.add_argument('--dataset', type=str, default='cifar_RGB_4bit.npz', metavar='', help='name of dataset')
 parser.add_argument('--dataset', type=str, default='data/cifar_RGB_4bit.npz', metavar='', help='name of dataset')

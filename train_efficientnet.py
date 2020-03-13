@@ -35,31 +35,31 @@ torch.backends.cudnn.benchmark = True
 
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
-config_parser = parser = argparse.ArgumentParser(description='Training Config', add_help=False)
+config_parser = parser = argparse.ArgumentParser(description='Training Config', add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
                     help='YAML config file specifying default arguments')
 
 
-parser = argparse.ArgumentParser(description='Training')
+parser = argparse.ArgumentParser(description='Training', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # Dataset / Model parameters
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('--model', default='resnet101', type=str, metavar='MODEL',
-                    help='Name of model to train (default: "countception"')
+                    help='Name of model to train')
 parser.add_argument('--pretrained', action='store_true', default=False,
                     help='Start with pretrained version of specified network (if avail)')
 parser.add_argument('--initial-checkpoint', default='', type=str, metavar='PATH',
-                    help='Initialize model from this checkpoint (default: none)')
+                    help='Initialize model from this checkpoint')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='Resume full model and optimizer state from checkpoint (default: none)')
+                    help='Resume full model and optimizer state from checkpoint')
 parser.add_argument('--no-resume-opt', action='store_true', default=False,
                     help='prevent resume of optimizer state when resuming model')
 parser.add_argument('--num-classes', type=int, default=1000, metavar='N',
-                    help='number of label classes (default: 1000)')
+                    help='number of label classes')
 parser.add_argument('--gp', default='avg', type=str, metavar='POOL',
-                    help='Type of global pool, "avg", "max", "avgmax", "avgmaxc" (default: "avg")')
+                    help='Type of global pool, "avg", "max", "avgmax", "avgmaxc"')
 parser.add_argument('--img-size', type=int, default=None, metavar='N',
-                    help='Image patch size (default: None => model default)')
+                    help='Image patch size (None => model default)')
 parser.add_argument('--mean', type=float, nargs='+', default=None, metavar='MEAN',
                     help='Override mean pixel value of dataset')
 parser.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
@@ -67,31 +67,31 @@ parser.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
 parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
 parser.add_argument('-b', '--batch-size', type=int, default=32, metavar='N',
-                    help='input batch size for training (default: 32)')
+                    help='input batch size for training')
 parser.add_argument('--drop', type=float, default=0.0, metavar='DROP',
-                    help='Dropout rate (default: 0.)')
+                    help='Dropout rate')
 parser.add_argument('--drop-connect', type=float, default=0.0, metavar='DROP',
-                    help='Drop connect rate (default: 0.)')
+                    help='Drop connect rate')
 # Optimizer parameters
 parser.add_argument('--opt', default='sgd', type=str, metavar='OPTIMIZER',
-                    help='Optimizer (default: "sgd"')
+                    help='Optimizer')
 parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
-                    help='Optimizer Epsilon (default: 1e-8)')
+                    help='Optimizer Epsilon')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
-                    help='SGD momentum (default: 0.9)')
+                    help='SGD momentum')
 parser.add_argument('--weight-decay', type=float, default=0.0001,
-                    help='weight decay (default: 0.0001)')
+                    help='weight decay')
 # Learning rate schedule parameters
 parser.add_argument('--sched', default='step', type=str, metavar='SCHEDULER',
-                    help='LR scheduler (default: "step"')
+                    help='LR scheduler')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
-                    help='learning rate (default: 0.01)')
+                    help='learning rate')
 parser.add_argument('--warmup-lr', type=float, default=0.0001, metavar='LR',
-                    help='warmup learning rate (default: 0.0001)')
+                    help='warmup learning rate')
 parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                     help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
 parser.add_argument('--epochs', type=int, default=200, metavar='N',
-                    help='number of epochs to train (default: 2)')
+                    help='number of epochs to train')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
@@ -101,27 +101,27 @@ parser.add_argument('--warmup-epochs', type=int, default=3, metavar='N',
 parser.add_argument('--cooldown-epochs', type=int, default=10, metavar='N',
                     help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
 parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
-                    help='LR decay rate (default: 0.1)')
+                    help='LR decay rate')
 # Augmentation parameters
 parser.add_argument('--color-jitter', type=float, default=0.4, metavar='PCT',
-                    help='Color jitter factor (default: 0.4)')
+                    help='Color jitter factor')
 parser.add_argument('--aa', type=str, default=None, metavar='NAME',
-                    help='Use AutoAugment policy. "v0" or "original". (default: None)'),
+                    help='Use AutoAugment policy. "v0" or "original".'),
 parser.add_argument('--reprob', type=float, default=0., metavar='PCT',
-                    help='Random erase prob (default: 0.)')
+                    help='Random erase prob')
 parser.add_argument('--remode', type=str, default='const',
-                    help='Random erase mode (default: "const")')
+                    help='Random erase mode')
 parser.add_argument('--recount', type=int, default=1,
-                    help='Random erase count (default: 1)')
+                    help='Random erase count')
 parser.add_argument('--mixup', type=float, default=0.0,
-                    help='mixup alpha, mixup enabled if > 0. (default: 0.)')
+                    help='mixup alpha, mixup enabled if > 0.')
 parser.add_argument('--mixup-off-epoch', default=0, type=int, metavar='N',
-                    help='turn off mixup after this epoch, disabled if 0 (default: 0)')
+                    help='turn off mixup after this epoch, disabled if 0')
 parser.add_argument('--smoothing', type=float, default=0.1,
-                    help='label smoothing (default: 0.1)')
+                    help='label smoothing')
 # Batch norm parameters (only works with gen_efficientnet based models currently)
 parser.add_argument('--bn-tf', action='store_true', default=False,
-                    help='Use Tensorflow BatchNorm defaults for models that support it (default: False)')
+                    help='Use Tensorflow BatchNorm defaults for models that support it')
 parser.add_argument('--bn-momentum', type=float, default=None,
                     help='BatchNorm momentum override (if not None)')
 parser.add_argument('--bn-eps', type=float, default=None,
@@ -132,16 +132,16 @@ parser.add_argument('--model-ema', action='store_true', default=False,
 parser.add_argument('--model-ema-force-cpu', action='store_true', default=False,
                     help='Force ema to be tracked on CPU, rank=0 node only. Disables EMA validation.')
 parser.add_argument('--model-ema-decay', type=float, default=0.9998,
-                    help='decay factor for model weights moving average (default: 0.9998)')
+                    help='decay factor for model weights moving average')
 # Misc
 parser.add_argument('--seed', type=int, default=42, metavar='S',
-                    help='random seed (default: 42)')
+                    help='random seed')
 parser.add_argument('--log-interval', type=int, default=50, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--recovery-interval', type=int, default=0, metavar='N',
                     help='how many batches to wait before writing recovery checkpoint')
 parser.add_argument('-j', '--workers', type=int, default=4, metavar='N',
-                    help='how many training processes to use (default: 1)')
+                    help='how many training processes to use')
 parser.add_argument('--num-gpu', type=int, default=1,
                     help='Number of GPUS to use')
 parser.add_argument('--save-images', action='store_true', default=False,
@@ -155,9 +155,9 @@ parser.add_argument('--no-prefetcher', action='store_true', default=False,
 parser.add_argument('--output', default='', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='prec1', type=str, metavar='EVAL_METRIC',
-                    help='Best metric (default: "prec1"')
+                    help='Best metric')
 parser.add_argument('--tta', type=int, default=0, metavar='N',
-                    help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
+                    help='Test/inference time augmentation (oversampling) factor. 0=None')
 parser.add_argument("--local_rank", default=0, type=int)
 
 
