@@ -11,3 +11,4 @@ Noise-free baseline (~88%):
 ```
 python noisynet.py --L2 0.0005 --dropout 0.1 --nepochs 450
 ```
+Attribution: The code in timm folder as well as efficientnet code in models folder and its supporting files are copied from Ross Wightman's https://github.com/rwightman/pytorch-image-models and are licenced under Apache 2.0.
