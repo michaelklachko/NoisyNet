@@ -8,9 +8,8 @@ import torch.utils.data
 
 from quant import QuantMeasure
 from plot_histograms import get_layers, plot_layers
-from hardware_model import add_noise_calculate_power, NoisyConv2d, NoisyLinear, QuantMeasure, distort_tensor
+from hardware_model import NoisyConv2d, NoisyLinear, QuantMeasure, distort_tensor
 from torch.distributions.normal import Normal
-import scipy.io
 
 
 class BasicBlock(nn.Module):
@@ -18,41 +17,26 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.downsample = downsample
         self.stride = stride
-        self.offset = args.offset
-
-        if self.offset > 0:
-            self.generate_offsets = True
-            with torch.no_grad():
-                self.register_buffer('act1_offsets', torch.zeros(1))
-                self.register_buffer('act2_offsets', torch.zeros(1))
-                #distr = Normal(loc=0, scale=args.offset * 4 * torch.ones(act_shape))
-                #offsets1 = torch.cuda.FloatTensor(output.size()).uniform_(-noise, noise)
-                #offsets1 = output * output.new_empty(output.shape).uniform_(-noise, noise)
-
-        #self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
 
         if args.act_max > 0:
             self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
         else:
             self.relu = nn.ReLU(inplace=True)
 
-        #self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv1 = NoisyConv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                 noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        if args.old_checkpoint:
-            self.bn1 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
+                                 stochastic=args.stochastic, debug=args.debug)
+
         self.conv2 = NoisyConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                 noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
-        if not args.old_checkpoint:
-            self.bn1 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
+                                 stochastic=args.stochastic, debug=args.debug)
+
+        self.bn1 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
         self.bn2 = nn.BatchNorm2d(planes, track_running_stats=args.track_running_stats)
 
         if downsample is not None:
             ds_in, ds_out, ds_strides = downsample
             self.ds_strides = ds_strides
-            #self.conv3 = nn.Conv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False)
             self.conv3 = NoisyConv2d(ds_in, ds_out, kernel_size=1, stride=ds_strides, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                     noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                     stochastic=args.stochastic, debug=args.debug)
             self.bn3 = nn.BatchNorm2d(ds_out, track_running_stats=args.track_running_stats)
             self.layer3 = []
 
@@ -61,9 +45,6 @@ class BasicBlock(nn.Module):
             self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
     def forward(self, x):
-
-        '''[[self.input], [self.conv1.weight], [conv1_weight_sums], [conv1_weight_sums_sep], [conv1_weight_sums_blocked],
-            [conv1_weight_sums_sep_blocked], [self.conv1_no_bias], [self.conv1_sep], [conv1_blocks], [conv1_sep_blocked]]'''
 
         if args.distort_pre_act:
             if self.offset:
@@ -89,17 +70,6 @@ class BasicBlock(nn.Module):
         if args.merge_bn:
             bias = self.bn1.bias.data.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
-            if args.scale_weights > 0:
-                #print('\nBefore')
-                #print(bias.flatten()[:6])
-                bias = bias * args.scale_weights
-                #print(bias.flatten()[:6])
-            if args.scale_bias > 0 and args.test_temp > 0:
-                # bias = bias ** (1. - (args.temperature - 25.) / 12.)
-                #print('\n\nBias\n', args.test_temp + 273., args.temperature + 273., args.test_temp + 273. / args.temperature + 273.)
-                #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
-                bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
-
 
             out += bias
             if args.plot:
@@ -135,20 +105,11 @@ class BasicBlock(nn.Module):
         if args.merge_bn:
             bias = self.bn2.bias.data.view(1, -1, 1, 1) - self.bn2.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn2.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn2.running_var.data.view(1, -1, 1, 1) + args.eps)
-            if args.scale_weights > 0:
-                bias = bias * args.scale_weights
-            if args.scale_bias > 0 and args.test_temp > 0:
-                #bias = bias ** (1. - (args.temperature - 25.) / 12.)
-                #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
-                bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
-
             out += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])
         else:
             out = self.bn2(out)
-        #print('\n\nbn2 weights:\n', self.bn2.weight, '\n\nbn2 biases:\n', self.bn2.bias, '\n\nbn2 running mean:\n', self.bn2.running_mean,
-                  #'\n\nbn2 running var:\n', self.bn2.running_var)
 
         if args.plot:
             arrays.append([out.half().detach().cpu().numpy()])
@@ -160,13 +121,6 @@ class BasicBlock(nn.Module):
             if args.merge_bn:
                 bias = self.bn3.bias.data.view(1, -1, 1, 1) - self.bn3.running_mean.data.view(1, -1, 1, 1) * \
                        self.bn3.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn3.running_var.data.view(1, -1, 1, 1) + args.eps)
-                if args.scale_weights > 0:
-                    bias = bias * args.scale_weights
-                if args.scale_bias > 0 and args.test_temp > 0:
-                    # bias = bias ** (1. - (args.temperature - 25.) / 12.)
-                    #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
-                    bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
-
                 residual += bias
             else:
                 residual = self.bn3(residual)
@@ -188,23 +142,8 @@ class ResNet(nn.Module):
         arrays = []
         super(ResNet, self).__init__()
 
-        self.offset = args.offset
-        self.offset_input = args.offset_input
-
-        if self.offset > 0:
-            self.generate_offsets = True
-            with torch.no_grad():
-                self.register_buffer('act2_offsets', torch.zeros(1))
-
-        if self.offset_input > 0:
-            self.generate_offsets = True
-            with torch.no_grad():
-                self.register_buffer('input_offsets', torch.zeros(1))
-
-
-        #self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.conv1 = NoisyConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False, num_bits=0, num_bits_weight=args.q_w,
-                                 noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                 stochastic=args.stochastic, debug=args.debug)
         self.bn1 = nn.BatchNorm2d(64, track_running_stats=args.track_running_stats)
         if args.act_max > 0:
             self.relu = nn.Hardtanh(0.0, args.act_max, inplace=True)
@@ -232,9 +171,8 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, stride=2)
 
         self.avgpool = nn.AvgPool2d(7, stride=1)
-        #self.fc = nn.Linear(512, num_classes)
         self.fc = NoisyLinear(512, num_classes, bias=True, num_bits=0, num_bits_weight=args.q_w,
-                                   noise=args.n_w, test_noise=args.n_w_test, stochastic=args.stochastic, debug=args.debug_noise)
+                                   stochastic=args.stochastic, debug=args.debug)
 
         if args.bn_out:
             self.bn_out = nn.BatchNorm1d(1000, track_running_stats=args.track_running_stats)
@@ -288,12 +226,6 @@ class ResNet(nn.Module):
         if args.merge_bn:
             bias = self.bn1.bias.data.view(1, -1, 1, 1) - self.bn1.running_mean.data.view(1, -1, 1, 1) * \
                    self.bn1.weight.data.view(1, -1, 1, 1) / torch.sqrt(self.bn1.running_var.data.view(1, -1, 1, 1) + args.eps)
-            if args.scale_weights > 0:
-                bias = args.scale_weights * bias
-            if args.scale_bias > 0 and args.test_temp > 0:
-                # bias = bias ** (1. - (args.temperature - 25.) / 12.)
-                #bias = bias.sign() * bias.abs() ** ((args.test_temp + 273.) / (args.temperature + 273.))
-                bias = bias.sign() * bias.abs().max() * (bias.abs() / bias.abs().max()) ** ((args.test_temp + 273.) / (args.temperature + 273.)) * args.scale_bias
             x += bias
             if args.plot:
                 arrays.append([bias.half().detach().cpu().numpy()])
@@ -356,22 +288,7 @@ class ResNet(nn.Module):
         if args.plot:
             arrays.append([x.half().detach().cpu().numpy()])
 
-            if args.plot_basic:
-                names = ['input', 'weights', 'vmm']
-            else:
-                #names = ['input', 'weights', 'vmm', 'vmm diff', 'vmm blocked', 'vmm diff blocked', 'weight sums', 'weight sums diff', 'weight sums blocked', 'weight sums diff blocked']
-                if args.block_size is None:
-                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source_full', 'source 128', 'source 64', 'source_32',
-                             'source full diff', 'source 128 diff', 'source 64 diff', 'source 32 diff',
-                             'input sums full diff', 'input sums 128 diff', 'input sums 64 diff', 'input sums 32 diff']
-                else:
-                    if args.block_size == 0:
-                        block_size = 'full'
-                    else:
-                        block_size = str(args.block_size)
-                    names = ['input', 'weights', 'vmm', 'vmm diff', 'source ' + block_size, 'source diff ' + block_size, 'input sums diff ' + block_size]
-
-                args.tag += '_full'
+            names = ['input', 'weights', 'vmm']
 
             if args.merge_bn:
                 names.append('bias')

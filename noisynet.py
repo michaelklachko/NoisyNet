@@ -20,7 +20,7 @@ import scipy.io
 parser = argparse.ArgumentParser(description='Your project title goes here', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 #parser.add_argument('--dataset', type=str, default='cifar_RGB_4bit.npz', metavar='', help='name of dataset')
-parser.add_argument('--dataset', type=str, default='data/cifar_RGB_4bit.npz', metavar='', help='name of dataset')
+parser.add_argument('--dataset', type=str, default='/data/cifar_RGB.npz', metavar='', help='name of dataset')
 parser.add_argument('--resume', type=str, default=None, metavar='', help='full path of models to resume training')
 parser.add_argument('--tag', type=str, default='', metavar='', help='string to prepend to args.checkpoint_dir')
 
