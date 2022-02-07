@@ -41,8 +41,10 @@ class BasicBlock(nn.Module):
             self.layer3 = []
 
         if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
+            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, 
+                calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, 
+                calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
     def forward(self, x):
 
@@ -151,12 +153,8 @@ class ResNet(nn.Module):
             self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        if args.q_a_first > 0:  #when quantizing, if q_a_first is not specified, set it to 6 bits
+        if args.q_a_first > 0 and args.q_a_first != 8:  #when quantizing, keep q_a_first at least 6 bits
             self.q_a_first = args.q_a_first
-        elif args.q_a > 0:
-            self.q_a_first = 6
-        elif args.q_a_first == 8:
-            self.q_a_first = 0
         else:
             self.q_a_first = 0
 
@@ -317,8 +315,6 @@ class ResNet(nn.Module):
 
             var_ = ''
             var_name = ''
-            #scipy.io.savemat('chip_plots/r18_first_layer_q4_act_4_acc_{:.2f}.mat'.format(acc), mdict={names[1]: arrays[1], names[2]: arrays[2]})
-            #raise(SystemExit)
             plot_layers(num_layers=len(layers), models=['plots/'], epoch=epoch, i=i, layers=layers,
                         names=names, var=var_name, vars=[var_], pctl=args.pctl, acc=acc, tag=args.tag, normalize=args.normalize)
             raise (SystemExit)

@@ -1,9 +1,7 @@
 import argparse
-import os
 import warnings
 import numpy as np
 from datetime import datetime
-import random
 
 import torch
 import torch.nn as nn
@@ -19,11 +17,11 @@ from hardware_model import QuantMeasure
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch ImageNet Training', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--data', default='/data/imagenet/', metavar='DIR', help='path to dataset')
-    parser.add_argument('--epochs', default=150, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('--epochs', default=100, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
     parser.add_argument('-b', '--batch_size', '--batchsize', '--batch-size', '--bs', default=256, type=int, metavar='N')
     parser.add_argument('--lr', '--LR', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate', dest='lr')
-    parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma on schedule.')
+    parser.add_argument('--lr_step', type=float, default=0.1, help='LR is multiplied by this value on schedule.')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
     parser.add_argument('--wd', '--L2', '--weight-decay', default=1e-4, type=float, metavar='W', help='weight decay', dest='weight_decay')
     parser.add_argument('-p', '--print-freq', default=1000, type=int, metavar='N', help='print frequency')
@@ -35,9 +33,9 @@ def parse_args():
     parser.add_argument('--distort_act', dest='distort_act', action='store_true', help='distort activations')
     parser.add_argument('--distort_pre_act', dest='distort_pre_act', action='store_true', help='distort pre-activations')
     parser.add_argument('--distort_act_test', dest='distort_act_test', action='store_true', help='distort activations during test')
-    parser.add_argument('--stochastic', default=0.5, type=float, help='stochastic uniform noise to add before rounding during quantization')
+    parser.add_argument('--stochastic', default=0.0, type=float, help='stochastic uniform noise to add before rounding during quantization')
     parser.add_argument('--step-after', default=30, type=int, help='reduce LR after this number of epochs')
-    parser.add_argument('--q_a', default=4, type=int, help='number of bits to quantize layer input')
+    parser.add_argument('--q_a', default=0, type=int, help='number of bits to quantize layer input')
     parser.add_argument('--q_a_first', default=0, type=int, help='number of bits to quantize first layer input (RGB dataset)')
     parser.add_argument('--q_w', default=0, type=int, help='number of bits to quantize layer weights')
     parser.add_argument('--act_max', default=0, type=float, help='clipping threshold for activations')
@@ -114,103 +112,6 @@ def parse_args():
     return args
 
 
-def load_from_checkpoint(args):
-    model, criterion, optimizer = build_model(args)
-    if os.path.isfile(args.resume):
-        if args.var_name is None:
-            print("=> loading checkpoint '{}'".format(args.resume))
-        checkpoint = torch.load(args.resume)
-        start_epoch = checkpoint['epoch']
-        best_acc = checkpoint['best_acc']
-        #model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        if args.var_name is None:
-            print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, start_epoch))
-        if args.debug:
-            utils.print_model(model, args, full=True)
-
-        for saved_name, saved_param in checkpoint['state_dict'].items():
-            #if saved model used DataParallel, convert this model to DP even if using a single GPU
-            if 'module' in saved_name and torch.cuda.device_count() == 1:
-                model = torch.nn.DataParallel(model)
-                break
-        for saved_name, saved_param in checkpoint['state_dict'].items():
-            matched = False
-            if args.debug:
-                print(saved_name)
-            for name, param in model.named_parameters():
-                if name == saved_name:
-                    matched = True
-                    if args.debug:
-                        print('\tmatched, copying...')
-                    param.data = saved_param.data
-                    #if 'bn' in name and 'weight' in name:
-                        #print('\n\n\nbn weight\n', param)
-            if 'running' in saved_name and 'bn' in saved_name and args.track_running_stats:  #batchnorm stats are not in named_parameters
-                matched = True
-                if args.debug:
-                    print('\tmatched, copying...')
-                m = model.state_dict()
-                m.update({saved_name: saved_param})
-                model.load_state_dict(m)
-            if args.q_a > 0 and ('quantize1' in saved_name or 'quantize2' in saved_name):
-                matched = True
-                if args.debug:
-                    print('\tmatched, copying...')
-                m = model.state_dict()
-                m.update({saved_name: saved_param})
-                model.load_state_dict(m)
-            if not matched and args.debug:
-                print('\t\t\t************ Not copying', saved_name)
-        if args.debug:
-            print('\n\nCurrent model')
-            for name, param in model.state_dict().items():
-                print(name)
-            print('\n\n')
-
-            print('\n\ncheckpoint:\n\n')
-            for name, param in checkpoint['state_dict'].items():
-                print(name)
-            print('\n\n')
-        #model.load_state_dict(checkpoint['state_dict'])
-    else:
-        print("=> no checkpoint found at '{}'".format(args.resume))
-        raise(SystemExit)
-
-    return model, criterion, optimizer, best_acc, start_epoch
-
-def merge_batchnorm(model, args):
-    print('\n\nMerging batchnorm into weights...\n\n')
-    for name, param in model.state_dict().items():  #model.named_parameters():
-        if name == 'module.conv1.weight':
-            if args.debug:
-                print(name)
-                print('\n\nBefore:\n', model.module.conv1.weight[0, 0, 0])
-            bn_weight = 'module.bn1.weight'
-            bn_running_var = 'module.bn1.running_var'
-        elif 'conv' in name:
-            bn_prefix = name[:16]
-            bn_num = name[20]
-            bn_weight = bn_prefix + 'bn' + bn_num + '.weight'
-            bn_running_var = bn_prefix + 'bn' + bn_num + '.running_var'
-            if args.debug:
-                print(name)
-                print('bn_prefix', bn_prefix)
-                print('bn_num', bn_num)
-                print('bn_weight', bn_weight)
-                print('bn_running_var', bn_running_var)
-        elif 'downsample.0' in name:
-            bn_prefix = name[:16]
-            bn_weight = bn_prefix + 'downsample.1.weight'
-            bn_running_var = bn_prefix + 'bn' + bn_num + '.running_var'
-        if 'conv' in name or 'downsample.0' in name:
-            param.data *= model.state_dict()[bn_weight].data.view(-1, 1, 1, 1) / torch.sqrt(
-                model.state_dict()[bn_running_var].data.view(-1, 1, 1, 1) + args.eps)
-        if name == 'module.conv1.weight':
-            if args.debug:
-                print('\n\nAfter:\n', model.module.conv1.weight[0, 0, 0])
-
-
 def validate(val_loader, model, args, epoch=0, plot_acc=0.0):
     model.eval()
     te_accs = []
@@ -246,7 +147,7 @@ def build_model(args):
     if args.resume:
         print(f"\n\n\tLoading R18 checkpoint from {args.resume}\n\n")
     else:
-        print(f"\n\n\tTraining R18 from scratch for {args.epochs}\n\n")
+        print(f"\n\n\tTraining R18 from scratch for {args.epochs} epochs\n\n")
 
     model = ResNet18(args)
 
@@ -264,6 +165,7 @@ def build_model(args):
 
 def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, best_acc, args):
     best_epoch = start_epoch
+    train_loader_len = len(train_loader)
     for epoch in range(start_epoch, args.epochs):
         #utils.adjust_learning_rate(optimizer, epoch, args)
         print('LR {:.5f}'.format(float(optimizer.param_groups[0]['lr'])), 'wd', 
@@ -274,10 +176,9 @@ def train(train_loader, val_loader, model, criterion, optimizer, start_epoch, be
 
         for i, data in enumerate(train_loader):
             images, target = data
-            train_loader_len = len(train_loader)
             images = images.cuda(non_blocking=True)
             target = target.cuda(non_blocking=True)
-
+            
             utils.adjust_learning_rate(args, optimizer, epoch, i, train_loader_len)
 
             output = model(images, epoch=epoch, i=i)
@@ -333,7 +234,8 @@ if __name__ == '__main__':
         print('\n\nQuantizing weights to {:d} bits, calculate_running is {}, pctl={:.3f}\n\n'.format(args.q_w, args.calculate_running, args.pctl))
 
     if args.resume:
-        model, criterion, optimizer, best_acc, start_epoch = load_from_checkpoint(args)
+        model, criterion, optimizer = build_model(args)
+        model, criterion, optimizer, best_acc, start_epoch = utils.load_from_checkpoint(args, model, criterion, optimizer)
 
         for param_group in optimizer.param_groups:
             if args.weight_decay != param_group['weight_decay']:
@@ -342,7 +244,7 @@ if __name__ == '__main__':
                 param_group['weight_decay'] = args.weight_decay
 
         if args.merge_bn:
-            merge_batchnorm(model, args)
+            utils.merge_batchnorm(model, args)
 
         print('\n\nTesting accuracy on validation set (should be {:.2f})...\n'.format(best_acc))
         if (args.q_a > 0 and start_epoch != 0 and args.calculate_running) or args.reset_start_epoch:

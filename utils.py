@@ -16,7 +16,7 @@ def adjust_learning_rate(args, optimizer, epoch, iteration, num_iter):
     max_iter = args.epochs * num_iter
 
     if args.lr_decay == 'step':
-        lr = args.lr * (args.gamma ** ((current_iter - warmup_iter) // (max_iter - warmup_iter)))
+        lr = args.lr * (args.lr_step ** (epoch // args.step_after))
     elif args.lr_decay == 'cos':
         #print('before', lr)
         lr = args.lr * (1 + cos(pi * (current_iter - warmup_iter) / (max_iter - warmup_iter))) / 2
@@ -25,15 +25,12 @@ def adjust_learning_rate(args, optimizer, epoch, iteration, num_iter):
         lr = args.lr * (1 - (current_iter - warmup_iter) / (max_iter - warmup_iter))
     elif args.lr_decay == 'schedule':
         count = sum([1 for s in args.schedule if s <= epoch])
-        lr = args.lr * pow(args.gamma, count)
+        lr = args.lr * pow(args.lr_step, count)
     else:
         raise ValueError('Unknown lr mode {}'.format(args.lr_decay))
 
     if epoch < warmup_epoch:
         lr = args.lr * current_iter / warmup_iter
-
-    #if args.lr_decay == 'step':
-        #lr = args.lr * (0.1 ** (epoch // args.step_after))
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr #/ args.batch_size
@@ -302,3 +299,99 @@ def print_batchnorm(model, i):
     print('\nbn4 run_means\n', bn4_run_mean.detach().cpu().numpy())
     if i != 0:
         print('\nbn4.weight gradients\n', bn4_weights.grad.detach().cpu().numpy())
+
+
+def load_from_checkpoint(args, model, criterion, optimizer):
+    if os.path.isfile(args.resume):
+        if args.var_name is None:
+            print("=> loading checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume)
+        start_epoch = checkpoint['epoch']
+        best_acc = checkpoint['best_acc']
+        #model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        if args.var_name is None:
+            print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, start_epoch))
+        if args.debug:
+            print_model(model, args, full=True)
+
+        for saved_name, saved_param in checkpoint['state_dict'].items():
+            #if saved model used DataParallel, convert this model to DP even if using a single GPU
+            if 'module' in saved_name and torch.cuda.device_count() == 1:
+                model = torch.nn.DataParallel(model)
+                break
+        for saved_name, saved_param in checkpoint['state_dict'].items():
+            matched = False
+            if args.debug:
+                print(saved_name)
+            for name, param in model.named_parameters():
+                if name == saved_name:
+                    matched = True
+                    if args.debug:
+                        print('\tmatched, copying...')
+                    param.data = saved_param.data
+                    #if 'bn' in name and 'weight' in name:
+                        #print('\n\n\nbn weight\n', param)
+            if 'running' in saved_name and 'bn' in saved_name and args.track_running_stats:  #batchnorm stats are not in named_parameters
+                matched = True
+                if args.debug:
+                    print('\tmatched, copying...')
+                m = model.state_dict()
+                m.update({saved_name: saved_param})
+                model.load_state_dict(m)
+            if args.q_a > 0 and ('quantize1' in saved_name or 'quantize2' in saved_name):
+                matched = True
+                if args.debug:
+                    print('\tmatched, copying...')
+                m = model.state_dict()
+                m.update({saved_name: saved_param})
+                model.load_state_dict(m)
+            if not matched and args.debug:
+                print('\t\t\t************ Not copying', saved_name)
+        if args.debug:
+            print('\n\nCurrent model')
+            for name, param in model.state_dict().items():
+                print(name)
+            print('\n\n')
+
+            print('\n\ncheckpoint:\n\n')
+            for name, param in checkpoint['state_dict'].items():
+                print(name)
+            print('\n\n')
+        #model.load_state_dict(checkpoint['state_dict'])
+    else:
+        print("=> no checkpoint found at '{}'".format(args.resume))
+        raise(SystemExit)
+
+    return model, criterion, optimizer, best_acc, start_epoch
+
+def merge_batchnorm(model, args):
+    print('\n\nMerging batchnorm into weights...\n\n')
+    for name, param in model.state_dict().items():  #model.named_parameters():
+        if name == 'module.conv1.weight':
+            if args.debug:
+                print(name)
+                print('\n\nBefore:\n', model.module.conv1.weight[0, 0, 0])
+            bn_weight = 'module.bn1.weight'
+            bn_running_var = 'module.bn1.running_var'
+        elif 'conv' in name:
+            bn_prefix = name[:16]
+            bn_num = name[20]
+            bn_weight = bn_prefix + 'bn' + bn_num + '.weight'
+            bn_running_var = bn_prefix + 'bn' + bn_num + '.running_var'
+            if args.debug:
+                print(name)
+                print('bn_prefix', bn_prefix)
+                print('bn_num', bn_num)
+                print('bn_weight', bn_weight)
+                print('bn_running_var', bn_running_var)
+        elif 'downsample.0' in name:
+            bn_prefix = name[:16]
+            bn_weight = bn_prefix + 'downsample.1.weight'
+            bn_running_var = bn_prefix + 'bn' + bn_num + '.running_var'
+        if 'conv' in name or 'downsample.0' in name:
+            param.data *= model.state_dict()[bn_weight].data.view(-1, 1, 1, 1) / torch.sqrt(
+                model.state_dict()[bn_running_var].data.view(-1, 1, 1, 1) + args.eps)
+        if name == 'module.conv1.weight':
+            if args.debug:
+                print('\n\nAfter:\n', model.module.conv1.weight[0, 0, 0])
