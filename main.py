@@ -44,6 +44,7 @@ def parse_args():
     parser.add_argument('--q_scale', default=1, type=float, help='scale upper value of quantized tensor by this value')
     parser.add_argument('--pctl', default=99.98, type=float, help='percentile to use for input/activation clipping (usually for quantization)')
     parser.add_argument('--warmup', action='store_true', help='set lower initial learning rate to warm up the training')
+    parser.add_argument('--whiten', action='store_true', help='scale and shift input data to be zero mean unit variance')
     parser.add_argument('--lr-decay', type=str, default='step', help='mode for learning rate decay')
 
     feature_parser = parser.add_mutually_exclusive_group(required=False)

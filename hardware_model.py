@@ -229,6 +229,8 @@ class QuantMeasure(nn.Module):
         with torch.no_grad():
             min_value = self.min_value
             if self.calculate_running:
+                if not self.training:
+                    print('\n\n\nCalculating running min/max during inference\n\n\n')
                 if self.min_value < 0:  # quantizing weights (ReLU is always positive)
                     pctl_pos, _ = torch.kthvalue(input[input > 0].flatten(), int(input[input > 0].numel() * self.pctl / 100.))
                     pctl_neg, _ = torch.kthvalue(torch.abs(input[input < 0]).flatten(), int(input[input < 0].numel() * self.pctl / 100.))
@@ -250,7 +252,7 @@ class QuantMeasure(nn.Module):
                     # print('input.shape', input.shape, 'pctl.shape', pctl.shape)
                     # self.running_max = pctl
                     # max_value = pctl
-                    max_value = input.max().item()
+                    max_value = input.max().item()  #use actual max value until done calculating running_max (few iterations)
                     # raise(SystemExit)
                     self.running_list.append(pctl)  # self.running_max)
                     # self.running_max.mul_(self.momentum).add_(max_value * (1 - self.momentum))
@@ -265,20 +267,13 @@ class QuantMeasure(nn.Module):
                 if self.min_value < 0 and self.running_min < 0:
                     min_value = self.running_min.item()
                     max_value = self.running_max.item()
-                elif self.max_value > 0:
-                    max_value = self.max_value
                 elif self.running_max.item() > 0:
                     max_value = self.running_max.item()
+                elif self.max_value > 0:
+                    max_value = self.max_value
                 else:
                     print('\n\nSetting max_value to input.max\nrunning_max is ', self.running_max.item())
                     max_value = input.max().item()
-
-                if False and max_value > 1:
-                    max_value = max_value * self.scale
-
-            if False and self.debug:  # list(input.shape) == [input.shape[0], 512] and torch.cuda.current_device() == 1:
-                print('{} gpu {}  max value (pctl/running/actual) {:.1f}/{:.1f}/{:.1f}'.format(
-                    list(input.shape), torch.cuda.current_device(), self.running_max.item(), input.max().item() * 0.95, input.max().item()))
 
             if self.training:
                 stoch = self.stochastic
@@ -338,11 +333,7 @@ class NoisyConv2d(nn.Conv2d):
             qinput = input
 
         if self.num_bits_weight > 0:
-            #path = 'results/a_q_w_4_fs_L2_0.01_current-0.0-0.0-0.0-0.0_L3-0.0_L3_act-0.0_L2-0.01-0.01-0.01-0.01_actmax-0.0-0.0-0.0_w_max1-0.0-0.0-0.0-0.0_bn-True_LR-0.001_grad_clip-0.0_2019-11-19_22-50-36/'
-            #plot(self.weight.detach().cpu().numpy(), values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=True, path=path+'weights_before')
             weight = self.quantize_weights(self.weight)
-            #plot(weight.detach().cpu().numpy(), values2=None, bins=120, range_=None, labels=['1', '2'], title='', log=True, path=path + 'weights_after')
-            #raise(SystemExit)
             # TODO how to quantize biases?
             if self.bias is not None:
                 pass

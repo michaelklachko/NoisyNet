@@ -6,10 +6,8 @@ import torch.nn.parallel
 import torch.optim
 import torch.utils.data
 
-from quant import QuantMeasure
 from plot_histograms import get_layers, plot_layers
 from hardware_model import NoisyConv2d, NoisyLinear, QuantMeasure, distort_tensor
-from torch.distributions.normal import Normal
 
 
 class BasicBlock(nn.Module):
@@ -41,9 +39,9 @@ class BasicBlock(nn.Module):
             self.layer3 = []
 
         if args.q_a > 0:
-            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, 
+            self.quantize1 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, max_value=args.act_max,
                 calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, 
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, max_value=args.act_max,
                 calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
     def forward(self, x):
@@ -153,15 +151,12 @@ class ResNet(nn.Module):
             self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        if args.q_a_first > 0 and args.q_a_first != 8:  #when quantizing, keep q_a_first at least 6 bits
-            self.q_a_first = args.q_a_first
-        else:
-            self.q_a_first = 0
-
-        if self.q_a_first > 0:
-            self.quantize1 = QuantMeasure(self.q_a_first, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
+        if args.q_a_first > 0:
+            self.quantize1 = QuantMeasure(args.q_a_first, stochastic=args.stochastic, scale=args.q_scale, max_value=args.act_max,
+                calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
         if args.q_a > 0:
-            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
+            self.quantize2 = QuantMeasure(args.q_a, stochastic=args.stochastic, scale=args.q_scale, max_value=args.act_max,
+                calculate_running=args.calculate_running, pctl=args.pctl, debug=args.debug_quant, inplace=args.q_inplace)
 
         self.layer1 = self._make_layer(block, 64)
         self.layer2 = self._make_layer(block, 128, stride=2)
@@ -205,7 +200,7 @@ class ResNet(nn.Module):
             if self.offset_input:
                 x = distort_tensor(self, args, x, scale=args.offset_input * self.quantize1.running_max, stop=self.offset == 0)
 
-        if self.q_a_first > 0:
+        if args.q_a_first > 0:
             x = self.quantize1(x)
 
         if args.distort_act:

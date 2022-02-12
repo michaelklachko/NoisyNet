@@ -47,11 +47,18 @@ def accuracy(output, target):
 def setup_data(args):
     traindir = os.path.join(args.data, 'train')
     valdir = os.path.join(args.data, 'val')
+    if args.whiten:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+    else:
+        mean = [0, 0, 0]
+        std = [1, 1, 1]
+
 
     train_dataset = datasets.ImageFolder(traindir, transforms.Compose([transforms.RandomResizedCrop(224),
-                    transforms.RandomHorizontalFlip(), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ]))
+                    transforms.RandomHorizontalFlip(), transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)]))
     val_dataset = datasets.ImageFolder(valdir, transforms.Compose([transforms.Resize(256),
-                    transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ]))
+                    transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)]))
 
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=False)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=False)
@@ -303,17 +310,24 @@ def print_batchnorm(model, i):
 
 def load_from_checkpoint(args, model, criterion, optimizer):
     if os.path.isfile(args.resume):
-        if args.var_name is None:
-            print("=> loading checkpoint '{}'".format(args.resume))
+        print("=> loading checkpoint '{}'".format(args.resume))
         checkpoint = torch.load(args.resume)
         start_epoch = checkpoint['epoch']
         best_acc = checkpoint['best_acc']
         #model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
-        if args.var_name is None:
-            print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, start_epoch))
+        print("=> loaded checkpoint '{}' {:.2f} (epoch {})\n".format(args.resume, best_acc, start_epoch))
         if args.debug:
-            print_model(model, args, full=True)
+            print('\n\nCurrent model')
+            for name, param in model.state_dict().items():
+                print(name)
+            print('\n\n')
+
+            print('\n\nCheckpoint:\n\n')
+            for name, param in checkpoint['state_dict'].items():
+                print(name)
+            print('\n\n')
+            raise SystemExit
 
         for saved_name, saved_param in checkpoint['state_dict'].items():
             #if saved model used DataParallel, convert this model to DP even if using a single GPU
@@ -323,42 +337,31 @@ def load_from_checkpoint(args, model, criterion, optimizer):
         for saved_name, saved_param in checkpoint['state_dict'].items():
             matched = False
             if args.debug:
-                print(saved_name)
+                print('name in checkpoint:', saved_name)
             for name, param in model.named_parameters():
                 if name == saved_name:
                     matched = True
                     if args.debug:
-                        print('\tmatched, copying...')
+                        print('\tmatched, copying to current model...')
                     param.data = saved_param.data
                     #if 'bn' in name and 'weight' in name:
                         #print('\n\n\nbn weight\n', param)
             if 'running' in saved_name and 'bn' in saved_name and args.track_running_stats:  #batchnorm stats are not in named_parameters
                 matched = True
                 if args.debug:
-                    print('\tmatched, copying...')
+                    print('\tmatched, copying to current model...')
                 m = model.state_dict()
                 m.update({saved_name: saved_param})
                 model.load_state_dict(m)
             if args.q_a > 0 and ('quantize1' in saved_name or 'quantize2' in saved_name):
                 matched = True
                 if args.debug:
-                    print('\tmatched, copying...')
+                    print('\tmatched, copying to current model...')
                 m = model.state_dict()
                 m.update({saved_name: saved_param})
                 model.load_state_dict(m)
             if not matched and args.debug:
                 print('\t\t\t************ Not copying', saved_name)
-        if args.debug:
-            print('\n\nCurrent model')
-            for name, param in model.state_dict().items():
-                print(name)
-            print('\n\n')
-
-            print('\n\ncheckpoint:\n\n')
-            for name, param in checkpoint['state_dict'].items():
-                print(name)
-            print('\n\n')
-        #model.load_state_dict(checkpoint['state_dict'])
     else:
         print("=> no checkpoint found at '{}'".format(args.resume))
         raise(SystemExit)
